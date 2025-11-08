@@ -1,12 +1,25 @@
 # api/server.py
+from dotenv import load_dotenv
+load_dotenv()
+import os
+if os.getenv("OPENAI_API_KEY"):
+    print("✅ OpenAI key detected — AI summaries enabled")
+else:
+    print("⚠️ No OpenAI key found — falling back to local summaries")
 from pathlib import Path
-from fastapi import FastAPI, Request, Query
-from fastapi.responses import RedirectResponse, StreamingResponse, HTMLResponse
-from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
-from storage.db import DB
+import os
 import csv, io
 from datetime import datetime
+from typing import Optional, List
+
+from fastapi import FastAPI, Request, Query, HTTPException
+from fastapi.responses import RedirectResponse, StreamingResponse, HTMLResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+from pydantic import BaseModel
+
+from storage.db import DB
+
 
 app = FastAPI()
 db = DB("ofgem.db")
@@ -63,7 +76,7 @@ def feed_csv(limit: int = Query(5000, ge=1, le=20000)):
     )
 
 # ---------------------------------------------------------------------------
-# Dynamic summaries UI with filters
+# Summaries UI with filters
 # ---------------------------------------------------------------------------
 
 TOPIC_TAGS = ["CAF/NIS", "Cyber", "Incident", "Consultation", "Guidance", "Enforcement", "Penalty"]
@@ -97,9 +110,9 @@ def summaries_page(
 
     q_lower = q.lower().strip()
     src_set = set(sources or [])
-    topic_set = set(topics or [])
+    topic_set = {t.lower() for t in (topics or [])}
 
-    filtered = []
+    filtered: List[dict] = []
     for e in all_items:
         text = f"{e.get('title','')} {e.get('content','')} {e.get('summary','')}".lower()
         tags = [t.lower() for t in (e.get("tags") or [])]
@@ -107,14 +120,16 @@ def summaries_page(
             continue
         if src_set and e.get("source") not in src_set:
             continue
-        if topic_set and not any(t.lower() in tags for t in topic_set):
+        if topic_set and not any(t in tags for t in topic_set):
             continue
         if not in_date_range(e.get("published_at")):
             continue
         filtered.append(e)
 
+    # Sort newest first (ISO timestamps sort fine as strings if consistent)
     filtered.sort(key=lambda e: e.get("published_at", ""), reverse=True)
 
+    # Pagination
     page = max(1, int(page))
     per_page = max(1, min(200, int(per_page)))
     total = len(filtered)
@@ -122,11 +137,9 @@ def summaries_page(
     end = start + per_page
     page_items = filtered[start:end]
     total_pages = (total + per_page - 1) // per_page if total else 1
+    page_numbers = list(range(max(1, page - 2), min(total_pages, page + 2) + 1))
 
     all_sources = sorted({i.get("source") for i in all_items if i.get("source")})
-
-    # Pre-compute pagination range
-    page_numbers = list(range(max(1, page - 2), min(total_pages, page + 2) + 1))
 
     return templates.TemplateResponse(
         "summaries.html",
@@ -148,3 +161,76 @@ def summaries_page(
             "all_topics": TOPIC_TAGS,
         },
     )
+
+# ---------------------------------------------------------------------------
+# AI Summary API
+# ---------------------------------------------------------------------------
+
+class AISummaryReq(BaseModel):
+    guid: str
+
+def _fallback_ai_summary(text: str, limit_words: int = 100) -> str:
+    words = (text or "").split()
+    snippet = " ".join(words[:limit_words])
+    return snippet + ("…" if len(words) > limit_words else "")
+
+def _openai_client():
+    try:
+        from openai import OpenAI
+        key = os.getenv("OPENAI_API_KEY")
+        if not key:
+            return None
+        return OpenAI(api_key=key)
+    except Exception:
+        return None
+
+def _generate_ai_summary(title: str, text: str, limit_words: int = 100) -> str:
+    text = (text or "").strip()
+    if not text:
+        return "No content available to summarise."
+    client = _openai_client()
+    if not client:
+        return _fallback_ai_summary(text, limit_words)
+
+    prompt = f"""Summarise the following item in **up to {limit_words} words**.
+Be concise, plain UK English, no bullet points, no headers. Focus on what it is, who it affects, and the action or implication.
+
+TITLE: {title}
+TEXT:
+{text[:6000]}
+"""
+    try:
+        resp = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "You are a precise UK energy regulation analyst."},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.2,
+        )
+        out = (resp.choices[0].message.content or "").strip()
+        # Hard cap: trim to ~100 words if model overshoots
+        words = out.split()
+        if len(words) > limit_words:
+            out = " ".join(words[:limit_words]) + "…"
+        return out
+    except Exception:
+        return _fallback_ai_summary(text, limit_words)
+
+def _find_item_by_guid(guid: str) -> Optional[dict]:
+    # Avoid changing DB code: scan current list
+    items = db.list_items(limit=10000)
+    for it in items:
+        if (it.get("guid") or it.get("link")) == guid:
+            return it
+    return None
+
+@app.post("/api/ai-summary")
+def ai_summary(req: AISummaryReq):
+    item = _find_item_by_guid(req.guid)
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+    text = item.get("content") or item.get("summary") or ""
+    title = item.get("title") or ""
+    summary = _generate_ai_summary(title, text, limit_words=100)
+    return JSONResponse({"ok": True, "summary": summary})
