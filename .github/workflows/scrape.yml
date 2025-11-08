@@ -29,6 +29,12 @@ jobs:
       - name: Export JSON
         run: python tools/export_json.py
 
+      - uses: actions/upload-artifact@v4
+        with:
+          name: items-json
+          path: public/items.json
+          retention-days: 14
+
       # Publish JSON to a lightweight 'data' branch
       - name: Commit JSON to data branch
         run: |
