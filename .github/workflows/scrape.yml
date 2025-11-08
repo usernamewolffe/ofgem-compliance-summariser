@@ -1,0 +1,48 @@
+name: Daily scrape (JSON publish)
+
+on:
+  schedule:
+    - cron: "15 06 * * *"   # 06:15 UTC daily
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+
+      - name: Install deps
+        run: pip install -r requirements.txt
+
+      - name: Scrape and summarise
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: python main.py
+
+      - name: Export JSON
+        run: python tools/export_json.py
+
+      # Publish JSON to a lightweight 'data' branch
+      - name: Commit JSON to data branch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if git ls-remote --exit-code --heads origin data; then
+            git fetch origin data:data
+            git checkout data
+          else
+            git checkout --orphan data
+            git rm -rf .
+          fi
+          mkdir -p public
+          cp public/items.json public/items.json
+          git add public/items.json
+          git commit -m "Update items.json ($(date -u +'%Y-%m-%dT%H:%M:%SZ'))" || echo "No changes"
+          git push origin data
