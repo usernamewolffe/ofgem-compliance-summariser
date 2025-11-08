@@ -36,6 +36,21 @@ class DB:
             )
             conn.commit()
 
+    def __init__(self, path="ofgem.db"):
+        self.path = path
+        self.conn = sqlite3.connect(self.path)
+        self.conn.row_factory = sqlite3.Row
+
+    def exists(self, guid_or_link: str) -> bool:
+        """Return True if an item with this guid (or link fallback) already exists."""
+        cur = self.conn.cursor()
+        cur.execute(
+            "SELECT 1 FROM items WHERE guid = ? OR link = ? LIMIT 1",
+            (guid_or_link, guid_or_link),
+        )
+        return cur.fetchone() is not None
+
+
     # --- tags helpers -------------------------------------------------------
     @staticmethod
     def _dump_tags(tags: Optional[Iterable[str] | str]) -> str:
@@ -69,14 +84,6 @@ class DB:
         # Fallback: comma-separated
         parts = [p.strip() for p in s.split(",") if p.strip()]
         return json.dumps(parts, ensure_ascii=False)
-
-            def exists(self, guid_or_link: str) -> bool:
-                cur = self.conn.cursor()
-                cur.execute(
-                    "SELECT 1 FROM items WHERE guid = ? OR link = ? LIMIT 1",
-                    (guid_or_link, guid_or_link),
-                )
-                return cur.fetchone() is not None
 
     @staticmethod
     def _load_tags(raw: Optional[str]) -> List[str]:
