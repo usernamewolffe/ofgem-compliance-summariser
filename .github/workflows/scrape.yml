@@ -2,7 +2,7 @@ name: Daily scrape (JSON publish)
 
 on:
   schedule:
-    - cron: "15 06 * * *"   # 06:15 UTC daily (07:15 in BST)
+    - cron: "15 06 * * *"   # 06:15 UTC daily (07:15 BST)
   workflow_dispatch:
   push:
     paths:
@@ -18,7 +18,7 @@ permissions:
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
 
     env:
       PYTHONUNBUFFERED: "1"
@@ -39,23 +39,47 @@ jobs:
 
       - name: Install dependencies
         run: |
+          set -euxo pipefail
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then
             pip install -r requirements.txt
           else
             pip install fastapi uvicorn jinja2 python-dotenv openai "httpx<0.28" requests feedparser beautifulsoup4
           fi
-          python -c "import sys; print('Python:', sys.version)"
-          python -c "import os; print('OPENAI set:', bool(os.getenv('OPENAI_API_KEY')))"
+          python - <<'PY'
+import sys, os
+print("Python:", sys.version)
+print("Sys.path[0]:", sys.path[0])
+print("OPENAI set:", bool(os.getenv("OPENAI_API_KEY")))
+PY
+
+      - name: Sanity check imports
+        run: |
+          set -euxo pipefail
+          python - <<'PY'
+import importlib
+for mod in ("storage.db","scraper.ofgem","summariser.model"):
+    try:
+        importlib.import_module(mod)
+        print(f"OK import {mod}")
+    except Exception as e:
+        print(f"FAIL import {mod}: {e}")
+        raise
+PY
 
       - name: Scrape last 1 day
-        run: python main.py --since 1
+        run: |
+          set -euxo pipefail
+          python main.py --since 1
 
       - name: Export JSON
         run: |
+          set -euxo pipefail
+          mkdir -p public
           python tools/export_json.py
-          test -f public/items.json || (echo 'public/items.json was not created' && exit 1)
-          # Save a copy BEFORE switching branches
+          test -f public/items.json || (echo "::error::public/items.json was not created" && exit 1)
+          ls -lh public/items.json
+          head -40 public/items.json || true
           cp public/items.json /tmp/items.json
 
       - name: Upload JSON artifact
@@ -67,10 +91,10 @@ jobs:
 
       - name: Publish JSON to data branch
         run: |
+          set -euxo pipefail
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          # Create/update 'data' branch without polluting main's history
           if git ls-remote --exit-code --heads origin data; then
             git fetch origin data:data
             git checkout data
@@ -81,7 +105,6 @@ jobs:
 
           mkdir -p public
           cp /tmp/items.json public/items.json
-
           git add public/items.json
           if git diff --cached --quiet; then
             echo "No changes to commit."
