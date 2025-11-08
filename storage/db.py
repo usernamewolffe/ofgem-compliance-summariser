@@ -70,14 +70,13 @@ class DB:
         parts = [p.strip() for p in s.split(",") if p.strip()]
         return json.dumps(parts, ensure_ascii=False)
 
-    def exists(self, guid_or_link: str) -> bool:
-        """True if an item with this guid (or link fallback) already exists."""
-        cur = self.conn.cursor()
-        cur.execute(
-            "SELECT 1 FROM items WHERE guid = ? OR link = ? LIMIT 1",
-            (guid_or_link, guid_or_link),
-        )
-        return cur.fetchone() is not None
+            def exists(self, guid_or_link: str) -> bool:
+                cur = self.conn.cursor()
+                cur.execute(
+                    "SELECT 1 FROM items WHERE guid = ? OR link = ? LIMIT 1",
+                    (guid_or_link, guid_or_link),
+                )
+                return cur.fetchone() is not None
 
     @staticmethod
     def _load_tags(raw: Optional[str]) -> List[str]:
