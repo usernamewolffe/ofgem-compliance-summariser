@@ -11,13 +11,17 @@
     .cards { list-style:none; padding:0; display:grid; gap:.75rem; }
     .card { border:1px solid #eee; border-radius:12px; padding:1rem; }
     .muted { color:#666; font-size:.9rem; }
-    form.inline { display:flex; gap:.5rem; align-items:center; margin-bottom:1rem; flex-wrap: wrap; }
+    form.inline { display:flex; gap:.5rem; align-items:center; margin-bottom:1rem; flex-wrap:wrap; }
     label.chk { display:flex; gap:.5rem; align-items:center; margin:.25rem 0; }
+    .dropdown { position:relative; }
+    .dropdown button { background:#fff; border:1px solid #ccc; border-radius:6px; padding:0.4rem 0.6rem; cursor:pointer; }
+    .dropdown-menu { display:none; position:absolute; top:110%; left:0; background:#fff; border:1px solid #ccc; border-radius:6px; padding:.5rem; box-shadow:0 2px 6px rgba(0,0,0,0.1); z-index:10; min-width:160px; }
+    .dropdown-menu label { display:flex; align-items:center; gap:.5rem; margin:.25rem 0; }
+    .dropdown.open .dropdown-menu { display:block; }
   </style>
 </head>
 <body>
   <div class="wrap">
-    <!-- LEFT SIDEBAR: Sources -->
     <aside>
       <form method="get" id="source-form">
         <h3 style="margin-top:0;">Sources</h3>
@@ -27,47 +31,46 @@
             <span style="text-transform:capitalize">{{ s }}</span>
           </label>
         {% endfor %}
-
-        <!-- Preserve other filters when changing sources -->
         <input type="hidden" name="q" value="{{ active.q }}">
         <input type="hidden" name="date_from" value="{{ active.date_from }}">
         <input type="hidden" name="date_to" value="{{ active.date_to }}">
-        <input type="hidden" name="topic" value="{{ active.topic }}">  <!-- NEW -->
         <input type="hidden" name="per_page" value="{{ active.per_page }}">
         <input type="hidden" name="page" value="1">
-
+        {% for t in active.topics %}
+          <input type="hidden" name="topics" value="{{ t }}">
+        {% endfor %}
         <button type="submit" style="margin-top:.75rem;">Apply</button>
       </form>
     </aside>
 
-    <!-- MAIN: Toolbar + Results -->
     <main>
       <form class="inline" method="get">
         <input type="search" name="q" placeholder="Search…" value="{{ active.q }}">
         <input type="date" name="date_from" value="{{ active.date_from }}">
         <input type="date" name="date_to" value="{{ active.date_to }}">
 
-        <!-- Keep selected sources on submit -->
+        <!-- Topic dropdown -->
+        <div class="dropdown" id="topicDropdown">
+          <button type="button" id="topicToggle">Topics ▾</button>
+          <div class="dropdown-menu">
+            {% for t in all_topics %}
+              <label>
+                <input type="checkbox" name="topics" value="{{ t }}" {% if t in active.topics %}checked{% endif %}>
+                {{ t }}
+              </label>
+            {% endfor %}
+          </div>
+        </div>
+
         {% for s in active.sources %}
           <input type="hidden" name="sources" value="{{ s }}">
         {% endfor %}
 
-        <!-- Topic dropdown (old behaviour restored) -->
-        <select name="topic" title="Topic">
-          {% for opt in topic_order %}
-            <option value="{{ opt }}" {% if active.topic == opt %}selected{% endif %}>
-              {{ "All topics" if not opt else opt }}
-            </option>
-          {% endfor %}
-        </select>
-
-        <!-- Per-page -->
-        <select name="per_page" title="Per page">
+        <select name="per_page">
           {% for n in [10,25,50,100] %}
             <option value="{{ n }}" {% if active.per_page == n %}selected{% endif %}>{{ n }} / page</option>
           {% endfor %}
         </select>
-
         <input type="hidden" name="page" value="1">
         <button type="submit">Filter</button>
       </form>
@@ -88,7 +91,14 @@
                 {% endif %}
               </p>
               {% if e.tags %}
-                <div class="muted">Tags: {{ ", ".join(e.tags) }}</div>
+                <div class="muted">
+                  Tags:
+                  {% if e.tags is string %}
+                    {{ e.tags.strip("[]").replace("'", "").replace('"', '') }}
+                  {% else %}
+                    {{ ", ".join(e.tags) }}
+                  {% endif %}
+                </div>
               {% endif %}
             </article>
           </li>
@@ -103,9 +113,7 @@
           {% if num == page %}
             <strong>{{ num }}</strong>
           {% else %}
-            <a href="?page={{ num }}&per_page={{ active.per_page }}{% if active.q %}&q={{ active.q|urlencode }}{% endif %}{% if active.date_from %}&date_from={{ active.date_from }}{% endif %}{% if active.date_to %}&date_to={{ active.date_to }}{% endif %}{% if active.topic %}&topic={{ active.topic|urlencode }}{% endif %}{% for s in active.sources %}&sources={{ s|urlencode }}{% endfor %}">
-              {{ num }}
-            </a>
+            <a href="?page={{ num }}&per_page={{ active.per_page }}{% if active.q %}&q={{ active.q|urlencode }}{% endif %}{% if active.date_from %}&date_from={{ active.date_from }}{% endif %}{% if active.date_to %}&date_to={{ active.date_to }}{% endif %}{% for s in active.sources %}&sources={{ s|urlencode }}{% endfor %}{% for t in active.topics %}&topics={{ t|urlencode }}{% endfor %}">{{ num }}</a>
           {% endif %}
         {% endfor %}
       </nav>
@@ -114,9 +122,20 @@
   </div>
 
   <script>
-    // Auto-apply when ticking a source
+    // Auto-submit sources form when changed
     const f = document.getElementById('source-form');
     if (f) f.addEventListener('change', () => f.submit());
+
+    // Simple dropdown toggle
+    const dropdown = document.getElementById('topicDropdown');
+    const toggle = document.getElementById('topicToggle');
+    if (toggle) {
+      toggle.addEventListener('click', () => dropdown.classList.toggle('open'));
+      document.addEventListener('click', (e) => {
+        if (!dropdown.contains(e.target)) dropdown.classList.remove('open');
+      });
+    }
   </script>
 </body>
 </html>
+
