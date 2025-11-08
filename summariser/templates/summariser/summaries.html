@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Compliance Summaries</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 0; }
+    .wrap { display:grid; grid-template-columns: 260px 1fr; gap: 1rem; padding: 1rem; }
+    aside { border:1px solid #eee; border-radius:12px; padding:1rem; }
+    .cards { list-style:none; padding:0; display:grid; gap:.75rem; }
+    .card { border:1px solid #eee; border-radius:12px; padding:1rem; }
+    .muted { color:#666; font-size:.9rem; }
+    form.inline { display:flex; gap:.5rem; align-items:center; margin-bottom:1rem; flex-wrap: wrap; }
+    label.chk { display:flex; gap:.5rem; align-items:center; margin:.25rem 0; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <!-- LEFT SIDEBAR: Sources -->
+    <aside>
+      <form method="get" id="source-form">
+        <h3 style="margin-top:0;">Sources</h3>
+        {% for s in all_sources %}
+          <label class="chk">
+            <input type="checkbox" name="sources" value="{{ s }}" {% if s in active.sources %}checked{% endif %}>
+            <span style="text-transform:capitalize">{{ s }}</span>
+          </label>
+        {% endfor %}
+
+        <!-- Preserve other filters when changing sources -->
+        <input type="hidden" name="q" value="{{ active.q }}">
+        <input type="hidden" name="date_from" value="{{ active.date_from }}">
+        <input type="hidden" name="date_to" value="{{ active.date_to }}">
+        <input type="hidden" name="topic" value="{{ active.topic }}">  <!-- NEW -->
+        <input type="hidden" name="per_page" value="{{ active.per_page }}">
+        <input type="hidden" name="page" value="1">
+
+        <button type="submit" style="margin-top:.75rem;">Apply</button>
+      </form>
+    </aside>
+
+    <!-- MAIN: Toolbar + Results -->
+    <main>
+      <form class="inline" method="get">
+        <input type="search" name="q" placeholder="Search…" value="{{ active.q }}">
+        <input type="date" name="date_from" value="{{ active.date_from }}">
+        <input type="date" name="date_to" value="{{ active.date_to }}">
+
+        <!-- Keep selected sources on submit -->
+        {% for s in active.sources %}
+          <input type="hidden" name="sources" value="{{ s }}">
+        {% endfor %}
+
+        <!-- Topic dropdown (old behaviour restored) -->
+        <select name="topic" title="Topic">
+          {% for opt in topic_order %}
+            <option value="{{ opt }}" {% if active.topic == opt %}selected{% endif %}>
+              {{ "All topics" if not opt else opt }}
+            </option>
+          {% endfor %}
+        </select>
+
+        <!-- Per-page -->
+        <select name="per_page" title="Per page">
+          {% for n in [10,25,50,100] %}
+            <option value="{{ n }}" {% if active.per_page == n %}selected{% endif %}>{{ n }} / page</option>
+          {% endfor %}
+        </select>
+
+        <input type="hidden" name="page" value="1">
+        <button type="submit">Filter</button>
+      </form>
+
+      <ul class="cards">
+        {% for e in entries %}
+          <li class="card">
+            <article>
+              <h4 style="margin:.2rem 0;">
+                <a href="{{ e.link }}" target="_blank" rel="noopener">{{ e.title }}</a>
+              </h4>
+              <div class="muted">
+                {{ (e.source or "")|upper }} · {{ e.published_at }}
+              </div>
+              <p>
+                {% if e.summary %}{{ e.summary }}
+                {% elif e.content %}{{ e.content[:220] }}{% if e.content|length > 220 %}…{% endif %}
+                {% endif %}
+              </p>
+              {% if e.tags %}
+                <div class="muted">Tags: {{ ", ".join(e.tags) }}</div>
+              {% endif %}
+            </article>
+          </li>
+        {% else %}
+          <li>No results.</li>
+        {% endfor %}
+      </ul>
+
+      {% if total_pages > 1 %}
+      <nav class="pagination" style="margin-top:1rem;">
+        {% for num in page_numbers %}
+          {% if num == page %}
+            <strong>{{ num }}</strong>
+          {% else %}
+            <a href="?page={{ num }}&per_page={{ active.per_page }}{% if active.q %}&q={{ active.q|urlencode }}{% endif %}{% if active.date_from %}&date_from={{ active.date_from }}{% endif %}{% if active.date_to %}&date_to={{ active.date_to }}{% endif %}{% if active.topic %}&topic={{ active.topic|urlencode }}{% endif %}{% for s in active.sources %}&sources={{ s|urlencode }}{% endfor %}">
+              {{ num }}
+            </a>
+          {% endif %}
+        {% endfor %}
+      </nav>
+      {% endif %}
+    </main>
+  </div>
+
+  <script>
+    // Auto-apply when ticking a source
+    const f = document.getElementById('source-form');
+    if (f) f.addEventListener('change', () => f.submit());
+  </script>
+</body>
+</html>

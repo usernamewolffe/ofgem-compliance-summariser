@@ -2,8 +2,14 @@ name: Daily scrape (JSON publish)
 
 on:
   schedule:
-    - cron: "15 06 * * *"   # 06:15 UTC daily
+    - cron: "15 06 * * *"   # 06:15 UTC daily (07:15 in BST)
   workflow_dispatch:
+  push:
+    paths:
+      - "scraper/**"
+      - "summariser/**"
+      - ".github/workflows/scrape.yml"
+      - "tools/export_json.py"
 
 permissions:
   contents: write
@@ -13,33 +19,38 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with: { fetch-depth: 0 }
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-python@v5
-        with: { python-version: '3.12' }
+        with:
+          python-version: "3.12"
+          cache: "pip"
 
       - name: Install deps
         run: pip install -r requirements.txt
 
-      - name: Scrape and summarise
+      - name: Scrape last 1 day
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-        run: python main.py
+        run: python main.py --since 1
 
       - name: Export JSON
         run: python tools/export_json.py
 
+      # Optional: also upload items.json as an artifact for quick download
       - uses: actions/upload-artifact@v4
         with:
           name: items-json
           path: public/items.json
-          retention-days: 14
+          retention-days: 7
 
       # Publish JSON to a lightweight 'data' branch
       - name: Commit JSON to data branch
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+
           if git ls-remote --exit-code --heads origin data; then
             git fetch origin data:data
             git checkout data
@@ -47,6 +58,7 @@ jobs:
             git checkout --orphan data
             git rm -rf .
           fi
+
           mkdir -p public
           cp public/items.json public/items.json
           git add public/items.json
