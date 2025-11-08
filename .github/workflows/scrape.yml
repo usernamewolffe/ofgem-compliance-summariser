@@ -61,6 +61,15 @@ jobs:
           python -c "import importlib; import sys; \
             [importlib.import_module(m) for m in ['storage.db','scraper.ofgem','summariser.model']]; \
             print('All imports OK')"
+      
+      - name: Assert DB.exists present
+        run: |
+          python - <<'PY'
+          from storage.db import DB
+          db = DB("ofgem.db")
+          print("Has exists():", hasattr(db, "exists"))
+          assert hasattr(db, "exists"), "DB.exists is missing on CI"
+          PY
 
       - name: Scrape last 1 day
         run: python main.py --since 1
