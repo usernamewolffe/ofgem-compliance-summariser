@@ -157,6 +157,14 @@ class DB:
                 payload,
             )
             conn.commit()
+    # --- compatibility aliases ---------------------------------------------
+    def insert_item(self, item: Dict[str, Any]) -> None:
+        """Legacy alias used by older scrapers. Now routes to upsert_item()."""
+        return self.upsert_item(item)
+
+    def save_item(self, item: Dict[str, Any]) -> None:
+        """Another legacy alias some scripts used; routes to upsert_item()."""
+        return self.upsert_item(item)
 
     def list_items(self, limit: int = 1000) -> List[Dict[str, Any]]:
         with self._conn() as conn, closing(conn.cursor()) as cur:
