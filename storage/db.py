@@ -2,15 +2,20 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from contextlib import closing
 from typing import Any, Dict, Iterable, List, Optional
 
 
 class DB:
-    def __init__(self, path: str) -> None:
+    def __init__(self, path: str = "ofgem.db") -> None:
         self.path = path
-        self._init()
+        # Create parent directory if a subpath is used
+        parent = os.path.dirname(self.path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        self._init_schema()
 
     # --- connections --------------------------------------------------------
     def _conn(self) -> sqlite3.Connection:
@@ -18,7 +23,8 @@ class DB:
         conn.row_factory = sqlite3.Row
         return conn
 
-    def _init(self) -> None:
+    # --- schema -------------------------------------------------------------
+    def _init_schema(self) -> None:
         with self._conn() as conn, closing(conn.cursor()) as cur:
             cur.execute(
                 """
@@ -30,26 +36,33 @@ class DB:
                     content TEXT,
                     summary TEXT,
                     published_at TEXT,
-                    tags TEXT -- JSON-encoded list of strings (e.g. ["Cyber","Guidance"])
+                    tags TEXT -- JSON-encoded list of strings, e.g. ["Cyber","Guidance"]
                 )
                 """
             )
+            # Backwards-compatible column adds (no-op if present)
+            cols = {r[1] for r in cur.execute("PRAGMA table_info(items)").fetchall()}
+            if "content" not in cols:
+                cur.execute("ALTER TABLE items ADD COLUMN content TEXT")
+            if "tags" not in cols:
+                cur.execute("ALTER TABLE items ADD COLUMN tags TEXT")
+            if "published_at" not in cols:
+                cur.execute("ALTER TABLE items ADD COLUMN published_at TEXT")
+
+            # Helpful indexes (guid already primary key, keep others for query perf)
+            cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_items_guid ON items(guid)")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_items_published ON items(published_at)")
             conn.commit()
 
-    def __init__(self, path="ofgem.db"):
-        self.path = path
-        self.conn = sqlite3.connect(self.path)
-        self.conn.row_factory = sqlite3.Row
-
+    # --- convenience --------------------------------------------------------
     def exists(self, guid_or_link: str) -> bool:
-        """Return True if an item with this guid (or link fallback) already exists."""
-        cur = self.conn.cursor()
-        cur.execute(
-            "SELECT 1 FROM items WHERE guid = ? OR link = ? LIMIT 1",
-            (guid_or_link, guid_or_link),
-        )
-        return cur.fetchone() is not None
-
+        """True if an item with this guid (or same link) already exists."""
+        with self._conn() as conn, closing(conn.cursor()) as cur:
+            cur.execute(
+                "SELECT 1 FROM items WHERE guid = ? OR link = ? LIMIT 1",
+                (guid_or_link, guid_or_link),
+            )
+            return cur.fetchone() is not None
 
     # --- tags helpers -------------------------------------------------------
     @staticmethod
@@ -64,32 +77,27 @@ class DB:
         if tags is None:
             return "[]"
 
-        # If it's already a container of strings
         if isinstance(tags, (list, tuple, set)):
             return json.dumps([str(t).strip() for t in tags if str(t).strip()], ensure_ascii=False)
 
-        # From here, treat as string
         s = str(tags).strip()
         if not s:
             return "[]"
 
-        # Try to parse as JSON array
         try:
             maybe = json.loads(s)
             if isinstance(maybe, list):
                 return json.dumps([str(t).strip() for t in maybe if str(t).strip()], ensure_ascii=False)
         except json.JSONDecodeError:
-            pass  # fall through
+            pass
 
-        # Fallback: comma-separated
         parts = [p.strip() for p in s.split(",") if p.strip()]
         return json.dumps(parts, ensure_ascii=False)
 
     @staticmethod
     def _load_tags(raw: Optional[str]) -> List[str]:
         """
-        Always return a Python list of strings.
-        Handles legacy formats like:
+        Always return a Python list of strings. Handles legacy formats like:
         - "['Cyber', 'Guidance']"
         - "Cyber, Guidance"
         - JSON array string
@@ -101,7 +109,6 @@ class DB:
         if not s:
             return []
 
-        # JSON array
         try:
             value = json.loads(s)
             if isinstance(value, list):
@@ -109,12 +116,10 @@ class DB:
         except json.JSONDecodeError:
             pass
 
-        # Legacy Python repr: ['Cyber', 'Guidance']
         if s.startswith("[") and s.endswith("]"):
             inner = s[1:-1].replace('"', "").replace("'", "")
             return [p.strip() for p in inner.split(",") if p.strip()]
 
-        # Fallback: comma-separated
         return [p.strip() for p in s.split(",") if p.strip()]
 
     # --- public API ---------------------------------------------------------
@@ -126,12 +131,12 @@ class DB:
         """
         payload: Dict[str, Any] = {
             "guid": item.get("guid") or item.get("link"),
-            "source": item.get("source"),
-            "title": item.get("title"),
-            "link": item.get("link"),
-            "content": item.get("content"),
-            "summary": item.get("summary"),
-            "published_at": item.get("published_at"),
+            "source": item.get("source") or "",
+            "title": item.get("title") or "",
+            "link": item.get("link") or "",
+            "content": item.get("content") or "",
+            "summary": item.get("summary") or "",
+            "published_at": item.get("published_at") or "",
             "tags": self._dump_tags(item.get("tags")),
         }
 
@@ -155,13 +160,11 @@ class DB:
 
     def list_items(self, limit: int = 1000) -> List[Dict[str, Any]]:
         with self._conn() as conn, closing(conn.cursor()) as cur:
-            # Note: PyCharm shows "No data sources configured..." because it can't introspect
-            # this SQLite file automatically. It's safe to ignore or configure a Data Source.
             cur.execute(
                 """
                 SELECT guid, source, title, link, content, summary, published_at, tags
                 FROM items
-                ORDER BY datetime(published_at) DESC, rowid DESC
+                ORDER BY datetime(COALESCE(published_at, '1970-01-01T00:00:00Z')) DESC, rowid DESC
                 LIMIT ?
                 """,
                 (int(limit),),
