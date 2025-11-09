@@ -123,6 +123,38 @@ FILTERS = {
         "exclude": [],
     },
 }
+# --- Topic tagging rules -----------------------------------------------------
+TOPIC_RULES = {
+    "CAF/NIS": [
+        r"\bcaf\b", r"\bnis2?\b", "network and information systems",
+        "nis directive", "nis regulation",
+    ],
+    "Cyber": [
+        "cyber", "ransom", "malware", "phishing", "credential",
+        r"\bcve-\d{4}-\d+\b", "vulnerability", "patch", "exploit",
+        "ot security", "ics security", "scada",
+    ],
+    "Incident": [
+        "incident", "outage", "breach", "failure", "fault", "fire", "spill",
+        "safety alert", "injury", "major accident",
+    ],
+    "Consultation": [
+        "consultation", "call for views", "call for input", "seeking views",
+        "have your say", "request for comment",
+    ],
+    "Guidance": [
+        "guidance", "good practice", "how to comply", "requirements", "standards",
+        "principles", "code of practice",
+    ],
+    "Enforcement": [
+        "enforcement", "investigation", "compliance action", "statutory notice",
+        "direction under", "enforcement case",
+    ],
+    "Penalty": [
+        "penalty", "fine", "sanction", "civil penalty", "monetary penalty",
+    ],
+}
+
 
 BYPASS = os.getenv("BYPASS_FILTERS", "0") == "1"
 
@@ -327,25 +359,50 @@ def _looks_like_page(url: str) -> bool:
     return any(path.endswith(ext) for ext in (".html", "/")) or path.count("/") >= 3
 
 def _scrape_dcode_list(url: str):
+    """Scrape only open consultations listed on the official DCode 'open consultations' page."""
     html = _fetch(url)
     soup = BeautifulSoup(html, "html.parser")
-    sels = [
-        "main a", "article a", ".entry-content a", "table a", "ul li a", "ol li a",
-    ]
+
+    results = []
     seen = set()
-    for sel in sels:
-        for a in soup.select(sel):
-            title = (a.get_text(strip=True) or "").strip()
-            href = a.get("href")
-            if not title or not href:
-                continue
-            link = urljoin(url, href)
-            if link in seen:
-                continue
-            seen.add(link)
-            # Keep index/year pages and individual items; drop pure anchors
-            if not href.startswith("#") and _looks_like_page(link):
-                yield {"link": link, "title": title, "id": link, "published": None, "summary": ""}
+
+    # The open consultations page has cards or list entries that link directly to consultation pages.
+    # We only take those links on THIS page, not from subpages or navigation.
+    for a in soup.select("main a[href], article a[href], .consultation-list a[href], .entry-content a[href]"):
+        href = a.get("href")
+        title = (a.get_text(strip=True) or "").strip()
+        if not href or not title:
+            continue
+
+        link = urljoin(url, href)
+        if link in seen:
+            continue
+        seen.add(link)
+
+        # Keep only links that are actually consultation details
+        path = urlparse(link).path.lower()
+        if not path.startswith("/consultations/"):
+            continue
+        if not any(x in path for x in ("open-consultations", "consultation-")):
+            continue
+        if link.rstrip("/") == url.rstrip("/"):
+            # skip self-link to the index page
+            continue
+        # skip obvious non-consultation paths (pdfs, downloads, etc.)
+        if link.lower().endswith(".pdf"):
+            continue
+
+        results.append({
+            "link": link,
+            "title": title,
+            "id": link,
+            "published": None,
+            "summary": ""
+        })
+
+    print(f"[dcode_html] filtered to {len(results)} open consultations")
+    return results
+
 
 def _scrape_ena_news(url: str):
     html = _fetch(url)
@@ -358,24 +415,53 @@ def _scrape_ena_news(url: str):
         link = urljoin(url, href)
         yield {"link": link, "title": title, "id": link, "published": None, "summary": ""}
 
-def _scrape_neso_news(url: str):
-    html = _fetch(url)
-    soup = BeautifulSoup(html, "html.parser")
-    for a in soup.select("a[href*='/news-and-events/']"):
-        href = a.get("href")
-        title = (a.get_text(strip=True) or "").strip()
-        if not href or not title:
-            continue
-        link = urljoin(url, href)
-        path = urlparse(link).path.rstrip("/").lower()
+#def _scrape_neso_news(url: str):
+ #   html = _fetch(url)
+  #  soup = BeautifulSoup(html, "html.parser")
+   # for a in soup.select("a[href*='/news-and-events/']"):
+    #    href = a.get("href")
+     #   title = (a.get_text(strip=True) or "").strip()
+      #  if not href or not title:
+#            continue
+#        link = urljoin(url, href)
+#        path = urlparse(link).path.rstrip("/").lower()
 
         # skip index/pagination/category hubs
-        if any(x in path for x in ("/media-centre", "/news-and-events")) and path.count("/") <= 4:
-            continue
-        if "page=" in link:
-            continue
+#        if any(x in path for x in ("/media-centre", "/news-and-events")) and path.count("/") <= 4:
+#            continue
+#        if "page=" in link:
+#            continue
 
-        yield {"link": link, "title": title, "id": link, "published": None, "summary": ""}
+#        yield {"link": link, "title": title, "id": link, "published": None, "summary": ""}
+
+def _topic_tags(title: str, content: str) -> list[str]:
+    """Return a list of topic tags matched against title+content."""
+    import re as _re
+    blob = f"{title or ''}\n{content or ''}".lower()
+    hit = []
+    for tag, patterns in TOPIC_RULES.items():
+        for pat in patterns:
+            if pat.startswith(r"\b") or any(ch in pat for ch in r"[]()?*+{}|\b"):
+                # treat as regex
+                try:
+                    if _re.search(pat, blob, flags=_re.IGNORECASE):
+                        hit.append(tag)
+                        break
+                except Exception:
+                    # bad regex pattern -> ignore gracefully
+                    continue
+            else:
+                if pat.lower() in blob:
+                    hit.append(tag)
+                    break
+    # de-dup while preserving order
+    seen = set()
+    out = []
+    for t in hit:
+        if t not in seen:
+            seen.add(t)
+            out.append(t)
+    return out
 
 
 # --- Main collector ----------------------------------------------------------
@@ -412,14 +498,14 @@ def collect_items():
                 continue
             base_src = "ena"
 
-        elif src == "neso_html":
-            try:
-                parsed_entries = list(_scrape_neso_news(feed_url))
-                print(f"[{src}] (html) {len(parsed_entries)} entries fetched")
-            except Exception as e:
-                print(f"[{src}] HTML scrape error: {e}")
-                continue
-            base_src = "neso"
+ #       elif src == "neso_html":
+ #           try:
+ #               parsed_entries = list(_scrape_neso_news(feed_url))
+ #               print(f"[{src}] (html) {len(parsed_entries)} entries fetched")
+ #           except Exception as e:
+ #               print(f"[{src}] HTML scrape error: {e}")
+ #               continue
+ #           base_src = "neso"
 
         else:
             # Default: Atom/RSS
@@ -457,6 +543,13 @@ def collect_items():
                 skipped += 1
                 continue
 
+            # --- Topic tagging ---
+            topics = _topic_tags(title, content)
+
+            # Always include the source tag (as upper-case) alongside topics
+            source_tag = (base_src or "").upper()
+            tags = topics + ([source_tag] if source_tag else [])
+
             kept += 1
             yield {
                 "source": base_src,
@@ -465,8 +558,10 @@ def collect_items():
                 "title": title,
                 "published_at": published,
                 "content": content,
-                "tags": base_src.upper(),
+                "tags": tags,  # <-- now a proper list of topics + source
             }
+
+
 
         print(f"[{src}] kept {kept} · skipped {skipped}")
 
