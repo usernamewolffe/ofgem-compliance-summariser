@@ -1,0 +1,54 @@
+name: Precompute AI Summaries
+
+on:
+  schedule:
+    - cron: "30 2 * * *"  # Every day at 02:30 UTC
+  workflow_dispatch:        # Allow manual runs from GitHub web UI
+
+jobs:
+  run-precompute:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Create virtual environment and install dependencies
+        run: |
+          python -m venv .venv
+          source .venv/bin/activate
+          pip install --upgrade pip
+          pip install -r requirements.txt || true  # ignore if no file
+          pip install openai pypdf requests fastapi uvicorn
+
+      - name: Run precompute script
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          source .venv/bin/activate
+          mkdir -p logs
+          echo "=== Running precompute job at $(date -u) ===" >> logs/precompute.log
+          PYTHONPATH=. python tools/precompute_summaries.py >> logs/precompute.log 2>&1 || echo "Script failed, continuing"
+
+      - name: Upload logs artifact (for inspection)
+        uses: actions/upload-artifact@v4
+        with:
+          name: precompute-logs
+          path: logs/precompute.log
+
+      - name: Commit updated database (if changed)
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if [[ -f ofgem.db ]]; then
+            git add ofgem.db
+            git diff --cached --quiet || git commit -m "Update AI summaries [auto]"
+            git push
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
