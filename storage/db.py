@@ -25,7 +25,9 @@ class DB:
 
     # --- schema -------------------------------------------------------------
     def _init_schema(self) -> None:
+        """Create/upgrade tables and indexes (idempotent)."""
         with self._conn() as conn, closing(conn.cursor()) as cur:
+            # Core items table
             cur.execute(
                 """
                 CREATE TABLE IF NOT EXISTS items (
@@ -40,6 +42,7 @@ class DB:
                 )
                 """
             )
+
             # Backwards-compatible column adds (no-op if present)
             cols = {r[1] for r in cur.execute("PRAGMA table_info(items)").fetchall()}
             if "content" not in cols:
@@ -49,9 +52,24 @@ class DB:
             if "published_at" not in cols:
                 cur.execute("ALTER TABLE items ADD COLUMN published_at TEXT")
 
-            # Helpful indexes (guid already primary key, keep others for query perf)
+            # Helpful indexes (guid already PK)
             cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_items_guid ON items(guid)")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_items_published ON items(published_at)")
+
+            # --- NEW: saved_filters table -----------------------------------
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS saved_filters (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    params_json TEXT NOT NULL,   -- serialized query params for /summaries
+                    cadence TEXT,                -- e.g. 'daily', 'weekly', or NULL
+                    created_at TEXT NOT NULL     -- ISO 8601 timestamp
+                )
+                """
+            )
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_saved_filters_created ON saved_filters(created_at)")
+
             conn.commit()
 
     # --- convenience --------------------------------------------------------
@@ -84,6 +102,7 @@ class DB:
         if not s:
             return "[]"
 
+        # JSON array string?
         try:
             maybe = json.loads(s)
             if isinstance(maybe, list):
@@ -91,6 +110,7 @@ class DB:
         except json.JSONDecodeError:
             pass
 
+        # Fallback: comma-separated
         parts = [p.strip() for p in s.split(",") if p.strip()]
         return json.dumps(parts, ensure_ascii=False)
 
@@ -109,6 +129,7 @@ class DB:
         if not s:
             return []
 
+        # JSON array
         try:
             value = json.loads(s)
             if isinstance(value, list):
@@ -116,13 +137,15 @@ class DB:
         except json.JSONDecodeError:
             pass
 
+        # Legacy Python repr
         if s.startswith("[") and s.endswith("]"):
             inner = s[1:-1].replace('"', "").replace("'", "")
             return [p.strip() for p in inner.split(",") if p.strip()]
 
+        # Fallback: comma-separated
         return [p.strip() for p in s.split(",") if p.strip()]
 
-    # --- public API ---------------------------------------------------------
+    # --- public API (items) -------------------------------------------------
     def upsert_item(self, item: Dict[str, Any]) -> None:
         """
         Upsert an item.
@@ -157,13 +180,12 @@ class DB:
                 payload,
             )
             conn.commit()
-    # --- compatibility aliases ---------------------------------------------
+
+    # Compatibility aliases used by older scrapers
     def insert_item(self, item: Dict[str, Any]) -> None:
-        """Legacy alias used by older scrapers. Now routes to upsert_item()."""
         return self.upsert_item(item)
 
     def save_item(self, item: Dict[str, Any]) -> None:
-        """Another legacy alias some scripts used; routes to upsert_item()."""
         return self.upsert_item(item)
 
     def list_items(self, limit: int = 1000) -> List[Dict[str, Any]]:
@@ -185,3 +207,38 @@ class DB:
             d["tags"] = self._load_tags(d.get("tags"))
             out.append(d)
         return out
+
+    # --- public API (saved filters) ----------------------------------------
+    def create_saved_filter(self, name: str, params_json: str, cadence: str | None = None) -> int:
+        """Create a saved filter and return its id."""
+        from datetime import datetime, timezone
+        with self._conn() as conn, closing(conn.cursor()) as cur:
+            cur.execute(
+                "INSERT INTO saved_filters (name, params_json, cadence, created_at) VALUES (?,?,?,?)",
+                (name.strip(), params_json, cadence, datetime.now(timezone.utc).isoformat()),
+            )
+            conn.commit()
+            return int(cur.lastrowid)
+
+    def list_saved_filters(self) -> List[Dict[str, Any]]:
+        """Return all saved filters newest first."""
+        with self._conn() as conn, closing(conn.cursor()) as cur:
+            cur.execute(
+                "SELECT id, name, params_json, cadence, created_at FROM saved_filters ORDER BY id DESC"
+            )
+            rows = cur.fetchall()
+            return [dict(r) for r in rows]
+
+    def get_saved_filter(self, filter_id: int) -> Optional[Dict[str, Any]]:
+        with self._conn() as conn, closing(conn.cursor()) as cur:
+            cur.execute(
+                "SELECT id, name, params_json, cadence, created_at FROM saved_filters WHERE id = ?",
+                (int(filter_id),),
+            )
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+    def delete_saved_filter(self, filter_id: int) -> None:
+        with self._conn() as conn, closing(conn.cursor()) as cur:
+            cur.execute("DELETE FROM saved_filters WHERE id = ?", (int(filter_id),))
+            conn.commit()

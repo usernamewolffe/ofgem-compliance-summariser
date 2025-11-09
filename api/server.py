@@ -2,11 +2,11 @@
 from dotenv import load_dotenv
 load_dotenv()
 
-import os, csv, io
+import os, csv, io, json
 from pathlib import Path
 from datetime import datetime
-from typing import Optional, List, Set
-from urllib.parse import urlparse
+from typing import Optional, List, Set, Dict, Any
+from urllib.parse import urlencode
 
 from fastapi import FastAPI, Request, Query, HTTPException
 from fastapi.responses import RedirectResponse, StreamingResponse, HTMLResponse, JSONResponse
@@ -16,15 +16,16 @@ from pydantic import BaseModel
 
 from storage.db import DB
 
-# --- constants --------------------------------------------------------------
-VIRTUAL_OFGEM_PUBS = "Ofgem Publications"
-TOPIC_TAGS = ["CAF/NIS", "Cyber", "Incident", "Consultation", "Guidance", "Enforcement", "Penalty"]
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+TOPIC_TAGS = [
+    "CAF/NIS", "Cyber", "Incident", "Consultation", "Guidance", "Enforcement", "Penalty"
+]
 
-def _is_ofgem_publication(item: dict) -> bool:
-    host = urlparse(item.get("link") or "").netloc.lower()
-    return host.endswith("ofgem.gov.uk")
-
-# --- app --------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# App + plumbing
+# ---------------------------------------------------------------------------
 app = FastAPI()
 db = DB("ofgem.db")
 
@@ -79,7 +80,7 @@ def feed_csv(limit: int = Query(5000, ge=1, le=20000)):
     )
 
 # ---------------------------------------------------------------------------
-# Summaries UI with sources + topics (incl. virtual "Ofgem Publications")
+# Summaries UI (search + date + source + topics) with pagination
 # ---------------------------------------------------------------------------
 @app.get("/summaries", response_class=HTMLResponse)
 def summaries_page(
@@ -92,7 +93,7 @@ def summaries_page(
     page: int = 1,
     per_page: int = 25,
 ):
-    all_items = db.list_items(limit=10000)
+    all_items = db.list_items(limit=20000)
 
     def in_date_range(dt_str: str) -> bool:
         if not (date_from or date_to):
@@ -110,18 +111,8 @@ def summaries_page(
     q_lower = q.lower().strip()
     src_set: Set[str] = set(sources or [])
     topic_set = {t.lower() for t in (topics or [])}
-    real_sources = sorted({i.get("source") for i in all_items if i.get("source")})
 
-    # Always show the virtual Ofgem Publications checkbox
-    # Build source list from the DB (no virtuals)
-    real_sources = sorted({(i.get("source") or "").strip() for i in all_items if i.get("source")})
-    all_sources = [s for s in real_sources if s]
-
-    # Filtering
     filtered: List[dict] = []
-    selected_real = src_set - {VIRTUAL_OFGEM_PUBS}
-    want_virtual = VIRTUAL_OFGEM_PUBS in src_set
-
     for e in all_items:
         # text filter
         text = f"{e.get('title','')} {e.get('content','')} {e.get('summary','')}".lower()
@@ -133,11 +124,14 @@ def summaries_page(
             continue
 
         # topic tag filter
-        tags = [t.lower() for t in (e.get("tags") or [])]
+        tags_raw = e.get("tags") or []
+        tags = [t.lower() for t in (tags_raw if isinstance(tags_raw, list) else [])]
+        # NOTE: if tags could be a string, you can handle that here if needed.
+
         if topic_set and not any(t in tags for t in topic_set):
             continue
 
-        # Simple source filter (exact match against what's stored)
+        # source filter
         if src_set and (e.get("source") not in src_set):
             continue
 
@@ -155,6 +149,9 @@ def summaries_page(
     page_items = filtered[start:end]
     total_pages = (total + per_page - 1) // per_page if total else 1
     page_numbers = list(range(max(1, page - 2), min(total_pages, page + 2) + 1))
+
+    # Available sources for sidebar
+    all_sources = sorted({(i.get("source") or "").strip() for i in all_items if i.get("source")})
 
     return templates.TemplateResponse(
         "summaries.html",
@@ -176,6 +173,62 @@ def summaries_page(
             "all_topics": TOPIC_TAGS,
         },
     )
+
+# ---------------------------------------------------------------------------
+# Saved Filters API
+# ---------------------------------------------------------------------------
+class SavedFilterIn(BaseModel):
+    name: str
+    params: Dict[str, Any]  # whatever you’d put on /summaries (q/date_from/date_to/sources/topics/per_page)
+    cadence: Optional[str] = None  # 'daily', 'weekly', etc. (optional)
+
+@app.get("/api/saved-filters")
+def list_saved_filters():
+    return {"filters": db.list_saved_filters()}
+
+@app.post("/api/saved-filters")
+def create_saved_filter(payload: SavedFilterIn):
+    # Ensure multi-select arrays are lists of strings
+    params = payload.params or {}
+    for key in ("sources", "topics"):
+        if key in params and not isinstance(params[key], list):
+            params[key] = [params[key]]
+    fid = db.create_saved_filter(
+        name=payload.name.strip(),
+        params_json=json.dumps(params, ensure_ascii=False),
+        cadence=payload.cadence,
+    )
+    return {"ok": True, "id": fid}
+
+@app.delete("/api/saved-filters/{filter_id}")
+def delete_saved_filter(filter_id: int):
+    if not db.get_saved_filter(filter_id):
+        raise HTTPException(status_code=404, detail="Filter not found")
+    db.delete_saved_filter(filter_id)
+    return {"ok": True}
+
+@app.get("/apply-saved-filter")
+def apply_saved_filter(filter_id: int):
+    rec = db.get_saved_filter(filter_id)
+    if not rec:
+        raise HTTPException(status_code=404, detail="Filter not found")
+
+    try:
+        params = json.loads(rec["params_json"])
+        # Build query string, preserving multi-values for sources/topics
+        query_items: List[tuple[str, str]] = []
+        for k, v in params.items():
+            if v is None or v == "":
+                continue
+            if k in ("sources", "topics") and isinstance(v, list):
+                for val in v:
+                    query_items.append((k, str(val)))
+            else:
+                query_items.append((k, str(v)))
+        query = urlencode(query_items, doseq=True)
+        return RedirectResponse(url=f"/summaries?{query}")
+    except Exception:
+        raise HTTPException(status_code=400, detail="Saved filter has invalid params")
 
 # ---------------------------------------------------------------------------
 # AI Summary API
@@ -231,7 +284,7 @@ TEXT:
         return _fallback_ai_summary(text, limit_words)
 
 def _find_item_by_guid(guid: str) -> Optional[dict]:
-    items = db.list_items(limit=10000)
+    items = db.list_items(limit=20000)
     for it in items:
         if (it.get("guid") or it.get("link")) == guid:
             return it
@@ -244,5 +297,8 @@ def ai_summary(req: AISummaryReq):
         raise HTTPException(status_code=404, detail="Item not found")
     text = item.get("content") or item.get("summary") or ""
     title = item.get("title") or ""
+    if not text or "[PDF document" in text:
+        return JSONResponse(
+            {"ok": True, "summary": "This entry is a PDF or has no readable text — open the link to view."})
     summary = _generate_ai_summary(title, text, limit_words=100)
     return JSONResponse({"ok": True, "summary": summary})
