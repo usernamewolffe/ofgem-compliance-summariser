@@ -1,6 +1,5 @@
 # api/server.py
-from dotenv import load_dotenv
-load_dotenv()
+from dotenv import load_dotenv; load_dotenv()
 
 import os, csv, io, json, requests, sqlite3, re
 from pathlib import Path
@@ -101,6 +100,25 @@ def _sql_one(sql: str, params: Tuple = ()) -> Optional[dict]:
     row = cur.fetchone()
     return dict(row) if row else None
 
+# --- AI summary cache helpers (items.ai_summary column) ---
+
+def _get_cached_ai_summary(guid: str) -> Optional[str]:
+    # try guid, then link (because some rows use link as guid)
+    row = _sql_one("SELECT ai_summary FROM items WHERE guid = ? LIMIT 1", (guid,))
+    if row and row.get("ai_summary"):
+        return row["ai_summary"]
+    row = _sql_one("SELECT ai_summary FROM items WHERE link = ? LIMIT 1", (guid,))
+    if row and row.get("ai_summary"):
+        return row["ai_summary"]
+    return None
+
+def _set_cached_ai_summary(guid: str, summary: str) -> None:
+    # write by guid
+    _sql_exec("UPDATE items SET ai_summary = ? WHERE guid = ?", (summary, guid))
+    # also try by link (harmless if no match)
+    _sql_exec("UPDATE items SET ai_summary = ? WHERE link = ?", (summary, guid))
+
+
 # -----------------------------
 # Folder helpers (self-contained)
 # -----------------------------
@@ -142,15 +160,29 @@ def _save_item(user_id: int, guid: str, folder_id: int | None = None) -> None:
     if not guid:
         raise HTTPException(400, "Missing guid")
 
+    # ✅ Check folder ownership if a folder_id is provided
     if folder_id is not None:
-        owner = _sql_one("SELECT id FROM folders WHERE id = ? AND user_id = ?", (folder_id, user_id))
+        owner = _sql_one(
+            "SELECT id FROM folders WHERE id = ? AND user_id = ?",
+            (folder_id, user_id),
+        )
         if not owner:
             raise HTTPException(400, "Folder not found")
 
+    # ✅ Prevent duplicate saves
+    existing = _sql_one(
+        "SELECT 1 FROM saved_items WHERE user_id = ? AND guid = ?",
+        (user_id, guid),
+    )
+    if existing:
+        raise HTTPException(409, "Item already saved")
+
+    # ✅ Save new item
     _sql_exec(
-        "INSERT OR IGNORE INTO saved_items (user_id, guid, folder_id) VALUES (?, ?, ?)",
+        "INSERT INTO saved_items (user_id, guid, folder_id) VALUES (?, ?, ?)",
         (user_id, guid, folder_id),
     )
+
 
 def _unsave_item(user_id: int, guid: str) -> None:
     _sql_exec("DELETE FROM saved_items WHERE user_id = ? AND guid = ?", (user_id, guid))
@@ -481,14 +513,19 @@ def _fallback_ai_summary(text: str, limit_words: int = 100) -> str:
     return snippet + ("…" if len(words) > limit_words else "")
 
 def _openai_client():
+    """Initialise and return an OpenAI client, with debug logging."""
     try:
         from openai import OpenAI
         key = os.getenv("OPENAI_API_KEY")
         if not key:
+            print("[AI] ⚠️ No OPENAI_API_KEY found in environment")
             return None
+        print("[AI] ✅ OpenAI API key found, creating client")
         return OpenAI(api_key=key)
-    except Exception:
+    except Exception as e:
+        print(f"[AI] ❌ Failed to create OpenAI client: {e}")
         return None
+
 
 # --- Boilerplate cleaner for extracted text ---
 _BOILERPLATE_PATTERNS = [
@@ -538,20 +575,36 @@ def _clean_extracted_text(title: str, text: str, max_chars: int = 12000) -> str:
         cleaned = cleaned[:max_chars]
     return cleaned
 
+def _is_boilerplate_summary(text: str) -> bool:
+    """Detects junk/boilerplate summaries that shouldn't be cached."""
+    if not text:
+        return True
+    bad_snippets = [
+        "skip to main content",
+        "user account menu",
+        "reset button in search",
+        "data portal",
+        "sign in / register",
+        "show/hide menu",
+        "main navigation",
+        "cookies",
+    ]
+    t = text.lower().strip()
+    return any(snip in t for snip in bad_snippets)
+
+
 def _generate_ai_summary(title: str, text: str, limit_words: int = 100, guid: str | None = None) -> str:
-    """Generate or reuse cached AI summary (stores in items.ai_summary)."""
+    print(f"[AI] 🔎 Generating summary guid={guid} title={title[:60]!r} len={len(text)}")
+    """Generate an AI summary using OpenAI; falls back if not available."""
     text = (text or "").strip()
     if not text:
+        print("[AI] ⚠️ No text provided to summarise.")
         return "No content available to summarise."
 
-    # Try to use cached summary first
-    if guid:
-        cached = _sql_one("SELECT ai_summary FROM items WHERE guid = ?", (guid,))
-        if cached and cached.get("ai_summary"):
-            return cached["ai_summary"]
-
+    print(f"[AI] 🔎 Generating summary for: {title[:60]!r} ({len(text)} chars)")
     client = _openai_client()
     if not client:
+        print("[AI] ⚠️ No OpenAI client available — using fallback snippet.")
         return _fallback_ai_summary(text, limit_words)
 
     prompt = f"""Summarise the following item in up to {limit_words} words.
@@ -562,6 +615,7 @@ TEXT:
 {text[:6000]}
 """
     try:
+        print("[AI] 🧠 Sending request to OpenAI API...")
         resp = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
@@ -571,18 +625,14 @@ TEXT:
             temperature=0.2,
         )
         out = (resp.choices[0].message.content or "").strip()
+        print("[AI] ✅ Received summary from OpenAI")
         words = out.split()
         if len(words) > limit_words:
             out = " ".join(words[:limit_words]) + "…"
-
-        # Cache the summary for next time
-        if guid:
-            _sql_exec("UPDATE items SET ai_summary = ? WHERE guid = ?", (out, guid))
-
         return out
-    except Exception:
+    except Exception as e:
+        print(f"[AI] ❌ OpenAI request failed: {e}")
         return _fallback_ai_summary(text, limit_words)
-
 
 def _is_pdf_link(url: str) -> bool:
     try:
@@ -641,16 +691,45 @@ def _find_item_by_guid(guid: str) -> Optional[dict]:
             return it
     return None
 
+@app.get("/api/test-openai")
+def test_openai():
+    from openai import OpenAI
+    key = os.getenv("OPENAI_API_KEY")
+    if not key:
+        return {"ok": False, "error": "No API key found"}
+    try:
+        client = OpenAI(api_key=key)
+        resp = client.models.list()
+        return {"ok": True, "models": [m.id for m in resp.data[:5]]}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
 @app.post("/api/ai-summary")
 def ai_summary(req: AISummaryReq):
     item = _find_item_by_guid(req.guid)
     if not item:
         raise HTTPException(status_code=404, detail="Item not found")
 
+    # ✅ 1️⃣ Return cached summary if present
+    if item.get("ai_summary"):
+        print(f"[AI] ♻️ Using cached summary for {req.guid}")
+        return JSONResponse({"ok": True, "summary": item["ai_summary"]})
+
+    title = (item.get("title") or "").strip()
+    link = (item.get("link") or "").strip()
+    text = (item.get("content") or item.get("summary") or "").strip()
+
+
     title = (item.get("title") or "").strip()
     link  = (item.get("link")  or "").strip()
     text  = (item.get("content") or item.get("summary") or "").strip()
 
+    # 1) Serve from cache if available
+    cached = _get_cached_ai_summary(req.guid)
+    if cached:
+        return JSONResponse({"ok": True, "summary": cached, "cached": True})
+
+    # 2) Get best source text: fetch PDF if needed
     wants_pdf = ("[PDF document" in text) or _is_pdf_link(link)
     if wants_pdf and link:
         try:
@@ -659,11 +738,13 @@ def ai_summary(req: AISummaryReq):
             if extracted:
                 text = extracted
             else:
+                # No text in PDF — return a helpful message but don't cache this
                 return JSONResponse({
                     "ok": True,
                     "summary": "This PDF appears to be image-based or has no extractable text. Please open the document to view."
                 })
         except Exception:
+            # Network or parsing issue — again, don't cache this
             return JSONResponse({
                 "ok": True,
                 "summary": "Could not fetch or parse the PDF for summary. Please open the document to view."
@@ -672,22 +753,28 @@ def ai_summary(req: AISummaryReq):
     if not text:
         return JSONResponse({"ok": True, "summary": "No content available to summarise."})
 
-    # scrub nav/footer boilerplate etc.
+    # Clean boilerplate to avoid weird menu text in the summary
     text = _clean_extracted_text(title, text)
 
-    summary = _generate_ai_summary(title, text, limit_words=120, guid=req.guid)
+    # 3) Generate via OpenAI; if it fails (e.g. 429), fall back without caching
+    summary = _generate_ai_summary(title, text, limit_words=120)
 
+    # 🔒 skip caching obviously junk content
+    if not _is_boilerplate_summary(summary):
+        try:
+            _sql_exec("UPDATE items SET ai_summary = ? WHERE guid = ?", (summary, req.guid))
+        except Exception as e:
+            print(f"[AI] ⚠️ Failed to cache summary: {e}")
+
+    # Heuristic: if we got the fallback (short or clearly not model output), we still cache it
+    # so repeated clicks don't keep hitting the API — but you can choose not to cache fallbacks.
     try:
-        _sql_exec(
-            "UPDATE items SET ai_summary = ?, ai_summary_updated_at = datetime('now') WHERE guid = ?",
-            (summary, item.get("guid") or item.get("link")),
-        )
-    except Exception:
-        pass
+        _set_cached_ai_summary(req.guid, summary)
+    except Exception as e:
+        # Non-fatal: just log; don’t block the response
+        print("[AI] ⚠️ Failed to cache summary:", e)
 
-    return JSONResponse({"ok": True, "summary": summary})
-
-    return JSONResponse({"ok": True, "summary": summary})
+    return JSONResponse({"ok": True, "summary": summary, "cached": False})
 
 # ---------------------------------------------------------------------------
 # Auth helpers & routes
