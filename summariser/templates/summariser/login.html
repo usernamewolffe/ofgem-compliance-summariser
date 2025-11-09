@@ -1,0 +1,21 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Login</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;margin:2rem}
+.container{max-width:420px;margin:0 auto}
+.muted{color:#666}
+.btn{background:#fff;border:1px solid #ccc;border-radius:6px;padding:.5rem .8rem;cursor:pointer}
+.btn.primary{border-color:#0a66c2;color:#0a66c2}
+input{width:100%;padding:.6rem .7rem;border:1px solid #ccc;border-radius:6px;margin:.4rem 0}
+</style></head>
+<body><div class="container">
+  <h2>Sign in</h2>
+  {% if error %}<div class="muted" style="color:#b32d2e">{{ error }}</div>{% endif %}
+  <form method="post">
+    <input type="email" name="email" placeholder="you@company.com" required>
+    <input type="password" name="password" placeholder="Password" required>
+    <button class="btn primary" type="submit">Sign in</button>
+  </form>
+  <p class="muted">No account? <a href="/account/register">Register</a></p>
+</div></body></html>

@@ -164,6 +164,7 @@
 
               <!-- AI Summary button -->
               <div style="margin-top:.5rem;">
+                <button type="button" class="btn save-btn" data-guid="{{ e.guid or e.link }}">Save</button>
                 <button type="button" class="btn ai-btn" data-guid="{{ e.guid or e.link }}">AI summary (≤100 words)</button>
               </div>
             </article>
@@ -379,3 +380,74 @@
   </script>
 </body>
 </html>
+
+  <!-- Save Modal -->
+  <div id="saveModal" class="modal-backdrop" aria-hidden="true">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="saveTitle">
+      <h3 id="saveTitle">Save to folder</h3>
+      <div class="muted" style="margin-bottom:.5rem;">Choose a folder or create one.</div>
+      <select id="folderSelect" style="width:100%;margin:.25rem 0;"></select>
+      <div class="row" style="margin-top:.5rem;">
+        <input id="newFolderName" placeholder="New folder name" style="flex:1;">
+        <button class="btn" id="createFolderBtn" type="button">Create</button>
+      </div>
+      <div class="actions">
+        <button type="button" class="btn" id="saveCancel">Cancel</button>
+        <button type="button" class="btn primary" id="saveConfirm">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+  (function(){
+    let pendingGuid = null;
+
+    function openSaveModal(guid){
+      pendingGuid = guid;
+      const modal = document.getElementById('saveModal');
+      modal.style.display = 'flex';
+      modal.setAttribute('aria-hidden','false');
+      loadFolders();
+    }
+    function closeSaveModal(){
+      pendingGuid = null;
+      const modal = document.getElementById('saveModal');
+      modal.style.display = 'none';
+      modal.setAttribute('aria-hidden','true');
+    }
+    async function loadFolders(){
+      const sel = document.getElementById('folderSelect');
+      sel.innerHTML = '<option value="">(No folder)</option>';
+      try{
+        const r = await fetch('/api/folders');
+        if(r.status === 401){ alert('Please sign in to save.'); closeSaveModal(); return; }
+        const data = await r.json();
+        (data.folders || []).forEach(f=>{
+          const o=document.createElement('option'); o.value=f.id; o.textContent=f.name; sel.appendChild(o);
+        });
+      }catch(e){ console.error(e); }
+    }
+    async function createFolder(){
+      const name = (document.getElementById('newFolderName').value||'').trim();
+      if(!name) return;
+      const r = await fetch('/api/folders', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({name})});
+      if(r.ok){ document.getElementById('newFolderName').value=''; loadFolders(); }
+    }
+    async function saveItem(){
+      if(!pendingGuid) return;
+      const folder_id = document.getElementById('folderSelect').value || null;
+      const r = await fetch('/api/save', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({guid: pendingGuid, folder_id: folder_id ? Number(folder_id) : null})});
+      if(r.status === 401){ alert('Please sign in to save.'); return; }
+      if(!r.ok){ alert('Failed to save.'); return;}
+      closeSaveModal();
+    }
+
+    document.querySelectorAll('.save-btn').forEach(b=>{
+      b.addEventListener('click', ()=> openSaveModal(b.getAttribute('data-guid')));
+    });
+    document.getElementById('createFolderBtn')?.addEventListener('click', createFolder);
+    document.getElementById('saveConfirm')?.addEventListener('click', saveItem);
+    document.getElementById('saveCancel')?.addEventListener('click', closeSaveModal);
+    document.getElementById('saveModal')?.addEventListener('click', (e)=>{ if(e.target.id==='saveModal') closeSaveModal(); });
+  })();
+  </script>
