@@ -1,22 +1,27 @@
 # Python
 __pycache__/
-*.py[cod]
-.venv/
-.env
-.env.*
-*.egg-info/
+*.pyc
+*.pyo
+*.pyd
 *.db
-data/
-storage/
-logs/
+*.sqlite3
 
-# System/editor
+# Virtual environment
+.venv/
+env/
+venv/
+
+# OS junk
 .DS_Store
+Thumbs.db
+
+# IDEs
+.idea/
 .vscode/
 
-# Node
-node_modules/
+# FastAPI / logs
+*.log
+*.pid
 
-# Build
-dist/
-build/
+# Local test data
+/tmp/

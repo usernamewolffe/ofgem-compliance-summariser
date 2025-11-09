@@ -78,8 +78,8 @@
           <div><a href="{{ it.link }}" target="_blank" rel="noopener">{{ it.title }}</a></div>
           <div class="muted">{{ it.published_at }}{% if it.folder %} · Folder: {{ it.folder }}{% endif %}</div>
           <div style="margin-top:.5rem;">
-            <button class="btn small" onclick='removeSaved({{ it.guid | tojson }})'>Remove</button>
-
+            <!-- FIXED: pass GUID as quoted string & close paren -->
+            <button class="btn small" onclick="removeSaved('{{ it.guid|e }}')">Remove</button>
           </div>
         </li>
       {% else %}
@@ -92,8 +92,10 @@
 <script>
 async function removeSaved(guid){
   try{
-    const url = '/api/unsave?guid=' + encodeURIComponent(guid);
-    const res = await fetch(url, { method: 'DELETE' });
+    const res = await fetch('/api/unsave?guid=' + encodeURIComponent(guid), {
+      method: 'DELETE',
+      credentials: 'same-origin'
+    });
     if(!res.ok){
       const t = await res.text().catch(()=> '');
       alert('Failed to remove.\n' + t);
@@ -105,5 +107,6 @@ async function removeSaved(guid){
   }
 }
 </script>
+
 </body>
 </html>
