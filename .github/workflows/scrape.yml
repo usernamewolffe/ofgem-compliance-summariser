@@ -78,8 +78,12 @@ jobs:
         run: |
           mkdir -p public
           python tools/export_json.py
-          test -f public/items.json || (echo 'public/items.json was not created' && exit 1)
-          cp public/items.json /tmp/items.json
+          test -f public/items.json || (echo "::error:: public/items.json was not created" && exit 1)
+          # Stash a copy for branch switch
+          cp public/items.json "$RUNNER_TEMP/items.json"
+          ls -lh public/items.json | cat
+          head -40 public/items.json || true
+
 
       - name: Upload JSON artifact
         uses: actions/upload-artifact@v4
@@ -90,18 +94,22 @@ jobs:
 
       - name: Commit JSON to data branch
         run: |
-          git config user.name "github-actions[bot]"
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-
-          # Always start clean
+      
+          # start clean on 'data'
           git fetch origin data || true
           git checkout -B data
           git reset --hard
-
-          mkdir -p public
-          cp public/items.json public/items.json
-
-          git add public/items.json
-          git commit -m "Update items.json ($(date -u +'%Y-%m-%dT%H:%M:%SZ'))" || echo "No changes"
-          git push origin data --force
       
+          mkdir -p public
+          cp "$RUNNER_TEMP/items.json" public/items.json
+      
+          git add public/items.json
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+          else
+            git commit -m "Update items.json ($(date -u +'%Y-%m-%dT%H:%M:%SZ'))"
+            git push origin data --force
+          fi
