@@ -2,10 +2,10 @@
 from dotenv import load_dotenv
 load_dotenv()
 
-import os, csv, io, json, requests, sqlite3
+import os, csv, io, json, requests, sqlite3, re
 from pathlib import Path
 from datetime import datetime
-from typing import Optional, List, Set, Dict, Any, Tuple, Union
+from typing import Optional, List, Set, Dict, Any, Tuple
 from urllib.parse import urlparse, urlencode
 
 from fastapi import FastAPI, Request, Query, HTTPException, Form, Body
@@ -101,8 +101,6 @@ def _sql_one(sql: str, params: Tuple = ()) -> Optional[dict]:
     row = cur.fetchone()
     return dict(row) if row else None
 
-
-
 # -----------------------------
 # Folder helpers (self-contained)
 # -----------------------------
@@ -136,9 +134,6 @@ def _create_folder(user_id: int, name: str) -> int:
         raise HTTPException(500, "Failed to create folder")
     return int(row["id"])
 
-def _unsave_item(user_id: int, guid: str) -> None:
-    _sql_exec("DELETE FROM saved_items WHERE user_id = ? AND guid = ?", (user_id, guid))
-
 # -----------------------------
 # Saved items helpers (self-contained)
 # -----------------------------
@@ -147,13 +142,11 @@ def _save_item(user_id: int, guid: str, folder_id: int | None = None) -> None:
     if not guid:
         raise HTTPException(400, "Missing guid")
 
-    # If a folder_id is provided, ensure it belongs to this user
     if folder_id is not None:
         owner = _sql_one("SELECT id FROM folders WHERE id = ? AND user_id = ?", (folder_id, user_id))
         if not owner:
             raise HTTPException(400, "Folder not found")
 
-    # Insert once only
     _sql_exec(
         "INSERT OR IGNORE INTO saved_items (user_id, guid, folder_id) VALUES (?, ?, ?)",
         (user_id, guid, folder_id),
@@ -162,8 +155,7 @@ def _save_item(user_id: int, guid: str, folder_id: int | None = None) -> None:
 def _unsave_item(user_id: int, guid: str) -> None:
     _sql_exec("DELETE FROM saved_items WHERE user_id = ? AND guid = ?", (user_id, guid))
 
-def _list_saved_items(user_id: int, folder_id: int | None = None) -> list[dict]:
-    # Fetch saved rows
+def _list_saved_items(user_id: int, folder_id: int | None = None) -> List[dict]:
     rows = _sql_all(
         "SELECT id, guid, folder_id, created_at FROM saved_items "
         "WHERE user_id = ? AND (? IS NULL OR folder_id = ?) "
@@ -171,19 +163,16 @@ def _list_saved_items(user_id: int, folder_id: int | None = None) -> list[dict]:
         (user_id, folder_id, folder_id),
     )
 
-    # Pull all content items once; match by guid OR link fallback
     items = db.list_items(limit=20000)  # existing helper
     by_guid = {str(e.get("guid") or ""): e for e in items if e.get("guid")}
     by_link = {str(e.get("link") or ""): e for e in items if e.get("link")}
 
-    out: list[dict] = []
+    out: List[dict] = []
     for r in rows:
         g = str(r.get("guid") or "")
         e = by_guid.get(g) or by_link.get(g)
         if not e:
-            # If the source item no longer exists, show a placeholder
             e = {"title": "(item unavailable)", "link": "", "published_at": "", "guid": g, "source": ""}
-        # decorate with folder name if present
         folder_name = None
         if r.get("folder_id"):
             f = _sql_one("SELECT name FROM folders WHERE id = ?", (r["folder_id"],))
@@ -198,7 +187,6 @@ def _list_saved_items(user_id: int, folder_id: int | None = None) -> list[dict]:
             "folder": folder_name,
         })
     return out
-
 
 # ---------------------------------------------------------------------------
 # Auth tables + helpers
@@ -237,12 +225,8 @@ def _ensure_users_tables() -> None:
             cadence TEXT
         )
     """)
-    # Uniqueness & case-insensitive folder names per user
     _sql_exec("CREATE UNIQUE INDEX IF NOT EXISTS uq_folders_user_name ON folders(user_id, name COLLATE NOCASE)")
-    # Prevent duplicate saves of same guid by same user
-    _sql_exec("CREATE UNIQUE INDEX IF NOT EXISTS uq_saved_user_guid ON saved_items(user_id, guid)")
     _sql_exec("CREATE UNIQUE INDEX IF NOT EXISTS uq_saved_items_user_guid ON saved_items(user_id, guid)")
-
 
 def _get_user_by_email(email: str) -> Optional[dict]:
     return _sql_one("SELECT id, email, password_hash FROM users WHERE email = ?", (email,))
@@ -400,7 +384,8 @@ def summaries_page(
     page_numbers = list(range(max(1, page - 2), min(total_pages, page + 2) + 1))
 
     all_sources = sorted({(i.get("source") or "").strip() for i in all_items if i.get("source")})
-
+    if not sources and not any([q, date_from, date_to, topics, page != 1]):
+        sources = list(all_sources)
     return render(
         request,
         "summaries.html",
@@ -495,6 +480,54 @@ def _openai_client():
         return OpenAI(api_key=key)
     except Exception:
         return None
+
+# --- Boilerplate cleaner for extracted text ---
+_BOILERPLATE_PATTERNS = [
+    r"\bskip to (main )?content\b",
+    r"\b(main )?navigation\b",
+    r"\b(show/?hide|toggle) menu\b",
+    r"\b(sign in|register|log ?in|log ?out)\b",
+    r"\b(search|search results|reset button in search)\b",
+    r"\b(cookie(s)? (banner|settings|preferences)|accept all cookies)\b",
+    r"\b(user account menu)\b",
+    r"\bfooter\b",
+    r"\bshare (this )?page\b",
+    r"\brelated (content|links)\b",
+    r"\bdata portal\b",
+]
+_BP_REGEX = re.compile("|".join(_BOILERPLATE_PATTERNS), re.IGNORECASE)
+
+def _clean_extracted_text(title: str, text: str, max_chars: int = 12000) -> str:
+    if not text:
+        return text
+    raw = re.sub(r"[ \t]+", " ", text)
+    raw = re.sub(r"\r\n?", "\n", raw)
+    lines = [ln.strip() for ln in raw.split("\n")]
+
+    kept: List[str] = []
+    ttl = (title or "").strip()
+    ttl_low = ttl.lower()
+
+    for ln in lines:
+        if not ln:
+            continue
+        if _BP_REGEX.search(ln):
+            continue
+        if len(ln) <= 3:
+            continue
+        if len(ln) <= 18 and not ln.endswith((".", ":", "?", "!", "…")):
+            continue
+        if ttl and ln.lower() == ttl_low:
+            continue
+        kept.append(ln)
+
+    cleaned = "\n".join(kept)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+    if len(cleaned) < 200:
+        cleaned = text.strip()
+    if len(cleaned) > max_chars:
+        cleaned = cleaned[:max_chars]
+    return cleaned
 
 def _generate_ai_summary(title: str, text: str, limit_words: int = 100) -> str:
     text = (text or "").strip()
@@ -616,6 +649,9 @@ def ai_summary(req: AISummaryReq):
     if not text:
         return JSONResponse({"ok": True, "summary": "No content available to summarise."})
 
+    # scrub nav/footer boilerplate etc.
+    text = _clean_extracted_text(title, text)
+
     summary = _generate_ai_summary(title, text, limit_words=100)
     return JSONResponse({"ok": True, "summary": summary})
 
@@ -711,7 +747,7 @@ def folders_new(request: Request, name: str = Form(...)):
         return RedirectResponse(url="/saved", status_code=302)
     except HTTPException as e:
         folders = _list_folders(uid)
-        items = db.list_saved_items(uid, folder_id=None)
+        items = _list_saved_items(uid, folder_id=None)
         return render(request, "saved.html", {
             "folders": folders,
             "items": items,
@@ -719,8 +755,7 @@ def folders_new(request: Request, name: str = Form(...)):
             "error": e.detail,
         })
 
-# Robust save API: accepts JSON or form, idempotent
-@app.post("/api/save")
+# Save / Unsave
 @app.post("/api/save")
 def api_save(request: Request, payload: SaveIn):
     uid = require_user(request)
@@ -728,7 +763,7 @@ def api_save(request: Request, payload: SaveIn):
     return {"ok": True}
 
 @app.api_route("/api/unsave", methods=["DELETE", "POST"])
-def api_unsave(request: Request, guid: str | None = Query(None), payload: dict | None = Body(None)):
+def api_unsave(request: Request, guid: str | None = Query(None), payload: Dict[str, Any] | None = Body(None)):
     uid = require_user(request)
     if not guid and payload and "guid" in payload:
         guid = str(payload["guid"])
@@ -736,7 +771,6 @@ def api_unsave(request: Request, guid: str | None = Query(None), payload: dict |
         raise HTTPException(400, "Missing guid")
     _unsave_item(uid, guid)
     return {"ok": True}
-
 
 @app.get("/saved", response_class=HTMLResponse)
 def saved_page(request: Request, folder_id: int | None = None):
@@ -759,5 +793,3 @@ def saved_page(request: Request, folder_id: int | None = None):
             "active_folder_name": active_folder_name,
         },
     )
-
-

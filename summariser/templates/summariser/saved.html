@@ -79,7 +79,8 @@
           <div class="muted">{{ it.published_at }}{% if it.folder %} · Folder: {{ it.folder }}{% endif %}</div>
           <div style="margin-top:.5rem;">
             <!-- FIXED: pass GUID as quoted string & close paren -->
-            <button class="btn small" onclick="removeSaved('{{ it.guid|e }}')">Remove</button>
+            <button class="btn small" data-guid="{{ it.guid|e }}" onclick="removeSaved('{{ it.guid|e }}')">Remove</button>
+
           </div>
         </li>
       {% else %}
@@ -91,6 +92,14 @@
 
 <script>
 async function removeSaved(guid){
+  // Confirm first
+  const ok = window.confirm("Remove this item from your saved list?");
+  if(!ok) return;
+
+  // Find the clicked button (optional nicety)
+  const btns = document.querySelectorAll(`button[data-guid="${CSS.escape(guid)}"]`);
+  btns.forEach(b => { b.disabled = true; b.textContent = "Removing…"; });
+
   try{
     const res = await fetch('/api/unsave?guid=' + encodeURIComponent(guid), {
       method: 'DELETE',
@@ -99,14 +108,17 @@ async function removeSaved(guid){
     if(!res.ok){
       const t = await res.text().catch(()=> '');
       alert('Failed to remove.\n' + t);
+      btns.forEach(b => { b.disabled = false; b.textContent = "Remove"; });
       return;
     }
     location.reload();
   }catch(err){
     alert('Failed to remove.\n' + (err?.message || err));
+    btns.forEach(b => { b.disabled = false; b.textContent = "Remove"; });
   }
 }
 </script>
+
 
 </body>
 </html>
