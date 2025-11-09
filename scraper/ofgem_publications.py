@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 import time
 from datetime import datetime, timezone
-from typing import Iterable, Optional, Tuple, Dict, Any
+from typing import Iterable, Optional, Tuple, Dict, Any, List
 from urllib.parse import urljoin, urlparse, parse_qs, urlencode, urlunparse
 
 import requests
@@ -16,17 +16,17 @@ USER_AGENT = (
     "Chrome/127.0.0.0 Safari/537.36"
 )
 
-# Default entry points (you can add more later)
+# You can add more entry points here later
 DEFAULT_START_URLS = [
     # Small-scale electricity generation publications
     "https://www.ofgem.gov.uk/electricity-generation/"
     "small-scale-electricity-generation/"
     "small-scale-electricity-generation-publications",
-    # You can add other libraries here, e.g. RO/REGO/FIT sections
 ]
 
+# ---------------------------------------------------------------------------
 
-def _get(session: requests.Session, url: str) -> Optional[BeautifulSoup]:
+def _get(session: requests.Session, url: str) -> BeautifulSoup:
     resp = session.get(url, timeout=30)
     resp.raise_for_status()
     return BeautifulSoup(resp.text, "lxml")
@@ -38,16 +38,15 @@ def _clean_space(s: str) -> str:
 
 def _parse_date(text_or_attr: str) -> Optional[str]:
     """
-    Try a few formats and return ISO 8601 UTC string (YYYY-MM-DDTHH:MM:SSZ),
+    Try common formats and return ISO 8601 UTC string (YYYY-MM-DDTHH:MM:SSZ),
     or None if we can't parse.
     """
     s = (text_or_attr or "").strip()
     if not s:
         return None
 
-    # Try datetime attribute (already ISO)
-    # Accepts e.g. 2025-10-09T00:00:00Z or without Z
-    m = re.match(r"(\d{4}-\d{2}-\d{2})([ T]\d{2}:\d{2}:\d{2})?Z?", s)
+    # ISO-like (with or without Z / time part)
+    m = re.match(r"(\d{4}-\d{2}-\d{2})([ T]\d{2}:\d{2}:\d{2})?Z?$", s)
     if m:
         try:
             dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
@@ -55,7 +54,7 @@ def _parse_date(text_or_attr: str) -> Optional[str]:
         except Exception:
             pass
 
-    # Try common textual formats like: "9 October 2025"
+    # e.g. "9 October 2025" / "09 Oct 2025" / "2025-10-09"
     for fmt in ("%d %B %Y", "%d %b %Y", "%Y-%m-%d"):
         try:
             dt = datetime.strptime(s, fmt).replace(tzinfo=timezone.utc)
@@ -69,7 +68,7 @@ def _should_keep(published_iso: Optional[str], since_dt: Optional[datetime]) -> 
     if not since_dt:
         return True
     if not published_iso:
-        # If no date, be conservative and keep
+        # If no date, keep (conservative)
         return True
     try:
         dt = datetime.fromisoformat(published_iso.replace("Z", "+00:00"))
@@ -93,25 +92,26 @@ def _add_or_set_query(url: str, **params) -> str:
 
 def _extract_cards(soup: BeautifulSoup, page_url: str) -> Iterable[Dict[str, Any]]:
     """
-    Ofgem 'publications library' pages typically render cards with:
+    Ofgem 'publications library' pages typically render cards/rows with:
       - <a href="...">Title</a>
-      - <time datetime="YYYY-MM-DD"> or date text nearby
-      - type label (e.g., Guidance, Decision, Consultation)
-    The exact markup varies, so we try a few patterns.
+      - <time datetime="YYYY-MM-DD"> or nearby date text
+      - a type/badge (Guidance, Consultation, Decision, Report, etc.)
+    We try several reasonable selectors to cope with template variations.
     """
-    # Try common card containers
-    candidates = []
-    candidates += soup.select("[data-component='publication-card'], .publication-card, article, li")
+    candidates: List = []
+    candidates += soup.select("[data-component='publication-card']")
+    candidates += soup.select(".publication-card")
+    candidates += soup.select("article")
+    candidates += soup.select("li")
 
     seen = set()
     for node in candidates:
-        # title/link
         a = node.select_one("a[href]")
         if not a:
             continue
+
         title = _clean_space(a.get_text())
         href = _normalize_url(page_url, a.get("href"))
-
         if not title or href in seen:
             continue
 
@@ -125,7 +125,6 @@ def _extract_cards(soup: BeautifulSoup, page_url: str) -> Iterable[Dict[str, Any
 
         # type label (badge/pill)
         type_label = None
-        # Try common label selectors
         label_el = (
             node.select_one(".ofgem-badge, .badge, .label, .tag, [data-component='tag']") or
             node.find(lambda x: x and x.name in ("span", "div") and "type" in " ".join(x.get("class", [])))
@@ -133,9 +132,9 @@ def _extract_cards(soup: BeautifulSoup, page_url: str) -> Iterable[Dict[str, Any
         if label_el:
             type_label = _clean_space(label_el.get_text())
 
-        # Fallback: try to infer type from snippets
-        snippet = _clean_space(node.get_text())
+        # Fallback: guess from text
         if not type_label:
+            snippet = _clean_space(node.get_text())
             for guess in ("Guidance", "Consultation", "Decision", "Call for evidence", "Report"):
                 if re.search(rf"\b{re.escape(guess)}\b", snippet, flags=re.I):
                     type_label = guess
@@ -154,21 +153,51 @@ def _find_next_page(soup: BeautifulSoup, current_url: str, page_num: int) -> Opt
     """
     Try to locate a 'next' link or fall back to incrementing ?page=.
     """
-    # Look for an explicit next pagination link
-    next_link = soup.find("a", string=re.compile(r"next", re.I)) or soup.select_one("a[rel='next']")
-    if next_link and next_link.get("href"):
-        return _normalize_url(current_url, next_link["href"])
-
-    # Fallback: try page=N+1
-    # Only do this up to a reasonable bound (we'll stop when no cards are found).
+    nxt = soup.find("a", string=re.compile(r"\bnext\b", re.I)) or soup.select_one("a[rel='next']")
+    if nxt and nxt.get("href"):
+        return _normalize_url(current_url, nxt["href"])
+    # Fallback: increment ?page=
     return _add_or_set_query(current_url, page=page_num + 1)
 
 
-def scrape_ofgem_publications(db, since: Optional[datetime] = None,
-                              start_urls: Optional[Iterable[str]] = None,
-                              delay_seconds: float = 0.8) -> Tuple[int, int]:
+def _extract_detail_text(session: requests.Session, url: str) -> str:
     """
-    Crawl Ofgem 'publications library' pages and upsert items into DB.
+    (Optional) Fetch a detail page and pull some readable text from common containers.
+    We keep this conservative so it doesn't break if the template changes.
+    """
+    try:
+        dp = _get(session, url)
+    except Exception:
+        return ""
+
+    # Common main-content containers on GOV.UK/Ofgem-styled pages
+    containers = dp.select("main, article, .content, .govuk-width-container")
+    text_bits: List[str] = []
+    for c in containers or []:
+        # Collect paragraph text; stop if already decent length
+        for p in c.select("p"):
+            s = _clean_space(p.get_text())
+            if s:
+                text_bits.append(s)
+            if sum(len(x) for x in text_bits) > 2000:
+                break
+        if text_bits:
+            break
+    return " ".join(text_bits)[:4000]
+
+
+# ---------------------------------------------------------------------------
+
+def scrape_ofgem_publications(
+    db,
+    since: Optional[datetime] = None,
+    start_urls: Optional[Iterable[str]] = None,
+    delay_seconds: float = 0.7,
+    fetch_detail: bool = False,
+    max_pages: int = 50,
+) -> Tuple[int, int]:
+    """
+    Crawl Ofgem 'publications' library pages and upsert items into DB.
 
     Returns (kept_count, skipped_count).
     """
@@ -176,24 +205,28 @@ def scrape_ofgem_publications(db, since: Optional[datetime] = None,
     kept, skipped = 0, 0
 
     session = requests.Session()
-    session.headers.update({"User-Agent": USER_AGENT, "Accept": "text/html"})
+    session.headers.update({
+        "User-Agent": USER_AGENT,
+        "Accept": "text/html,application/xhtml+xml",
+    })
 
     for root in start_urls:
         page = 1
         url = root
+
         while True:
             try:
                 soup = _get(session, url)
             except requests.HTTPError as e:
-                print(f"[ofgem_pubs] HTTP {e.response.status_code} for {url}")
+                print(f"[ofgem_publications] HTTP {e.response.status_code} for {url}")
                 break
             except Exception as e:
-                print(f"[ofgem_pubs] Error fetching {url}: {e}")
+                print(f"[ofgem_publications] Error fetching {url}: {e}")
                 break
 
             cards = list(_extract_cards(soup, url))
             if not cards:
-                # No results on this page; we’re done with this root
+                # No results on this page; done with this section
                 break
 
             for c in cards:
@@ -206,22 +239,23 @@ def scrape_ofgem_publications(db, since: Optional[datetime] = None,
                 link = c["link"]
                 pub_type = c["type"]
 
-                # Derive basic tags
-                tags = []
+                # Optional detail fetch
+                content_text = _extract_detail_text(session, link) if fetch_detail else ""
+
+                # Lightweight tags
+                tags: List[str] = []
                 if pub_type:
                     tags.append(pub_type)
-                # You can also add topic hints based on the root URL
                 if "small-scale" in root:
                     tags.append("Small-scale generation")
 
-                # Minimal payload; leave summary/content blank (you can enrich later)
                 item = {
-                    "guid": link,
-                    "source": "OFGEM",
+                    "guid": link,                         # stable unique id
+                    "source": "Ofgem Publications",       # <-- normal source name
                     "title": title,
                     "link": link,
-                    "content": "",
-                    "summary": "",
+                    "content": content_text,
+                    "summary": "",                        # your summariser can fill this later
                     "published_at": published_iso or "",
                     "tags": tags,
                 }
@@ -233,10 +267,11 @@ def scrape_ofgem_publications(db, since: Optional[datetime] = None,
                     print(f"! Failed to save '{title}': {e}")
                     skipped += 1
 
-            # Next page
+            # Next page logic
+            if page >= max_pages:
+                break
             next_url = _find_next_page(soup, url, page)
-            # Stop if next page appears to loop to the same URL or we’ve obviously gone too far
-            if not next_url or next_url == url or page > 50:
+            if not next_url or next_url == url:
                 break
             page += 1
             url = next_url
