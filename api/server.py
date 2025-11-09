@@ -6,13 +6,14 @@ import os, csv, io, json
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, List, Set, Dict, Any
-from urllib.parse import urlencode
 
-from fastapi import FastAPI, Request, Query, HTTPException
+from fastapi import FastAPI, Request, Query, HTTPException, Form
+from starlette.middleware.sessions import SessionMiddleware
 from fastapi.responses import RedirectResponse, StreamingResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
+from passlib.hash import bcrypt
 
 from storage.db import DB
 
@@ -27,7 +28,18 @@ TOPIC_TAGS = [
 # App + plumbing
 # ---------------------------------------------------------------------------
 app = FastAPI()
+
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=os.getenv("SESSIONS_SECRET", "dev-secret"),
+    same_site="lax",
+    https_only=False,
+)
+
 db = DB("ofgem.db")
+# Ensure tables for users/folders/saved exist
+if hasattr(db, "init_auth"):
+    db.init_auth()
 
 # Static UI (legacy)
 app.mount("/static", StaticFiles(directory="api/static", html=True), name="static")
@@ -36,6 +48,19 @@ app.mount("/static", StaticFiles(directory="api/static", html=True), name="stati
 BASE_DIR = Path(__file__).resolve().parent.parent
 TEMPLATES_DIR = BASE_DIR / "summariser" / "templates" / "summariser"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+
+# ---------------------------------------------------------------------------
+# Render helper (avoid touching request.session in templates)
+# ---------------------------------------------------------------------------
+def render(request: Request, template_name: str, ctx: dict | None = None):
+    ctx = ctx or {}
+    try:
+        uid = request.session.get("uid")
+    except Exception:
+        uid = None
+    ctx["uid"] = uid
+    ctx["request"] = request
+    return templates.TemplateResponse(template_name, ctx)
 
 # ---------------------------------------------------------------------------
 # Basic routes
@@ -126,7 +151,6 @@ def summaries_page(
         # topic tag filter
         tags_raw = e.get("tags") or []
         tags = [t.lower() for t in (tags_raw if isinstance(tags_raw, list) else [])]
-        # NOTE: if tags could be a string, you can handle that here if needed.
 
         if topic_set and not any(t in tags for t in topic_set):
             continue
@@ -153,10 +177,10 @@ def summaries_page(
     # Available sources for sidebar
     all_sources = sorted({(i.get("source") or "").strip() for i in all_items if i.get("source")})
 
-    return templates.TemplateResponse(
+    return render(
+        request,
         "summaries.html",
         {
-            "request": request,
             "entries": page_items,
             "page": page,
             "total_pages": total_pages,
@@ -179,7 +203,7 @@ def summaries_page(
 # ---------------------------------------------------------------------------
 class SavedFilterIn(BaseModel):
     name: str
-    params: Dict[str, Any]  # whatever you’d put on /summaries (q/date_from/date_to/sources/topics/per_page)
+    params: Dict[str, Any]  # whatever you’d put on /summaries
     cadence: Optional[str] = None  # 'daily', 'weekly', etc. (optional)
 
 @app.get("/api/saved-filters")
@@ -188,7 +212,6 @@ def list_saved_filters():
 
 @app.post("/api/saved-filters")
 def create_saved_filter(payload: SavedFilterIn):
-    # Ensure multi-select arrays are lists of strings
     params = payload.params or {}
     for key in ("sources", "topics"):
         if key in params and not isinstance(params[key], list):
@@ -212,10 +235,9 @@ def apply_saved_filter(filter_id: int):
     rec = db.get_saved_filter(filter_id)
     if not rec:
         raise HTTPException(status_code=404, detail="Filter not found")
-
     try:
         params = json.loads(rec["params_json"])
-        # Build query string, preserving multi-values for sources/topics
+        from urllib.parse import urlencode
         query_items: List[tuple[str, str]] = []
         for k, v in params.items():
             if v is None or v == "":
@@ -231,7 +253,7 @@ def apply_saved_filter(filter_id: int):
         raise HTTPException(status_code=400, detail="Saved filter has invalid params")
 
 # ---------------------------------------------------------------------------
-# AI Summary API
+# AI Summary API (+ PDF handling)
 # ---------------------------------------------------------------------------
 class AISummaryReq(BaseModel):
     guid: str
@@ -283,6 +305,60 @@ TEXT:
     except Exception:
         return _fallback_ai_summary(text, limit_words)
 
+# --- PDF helpers ------------------------------------------------------------
+import requests
+from urllib.parse import urlparse
+
+def _is_pdf_link(url: str) -> bool:
+    try:
+        path = urlparse(url).path.lower()
+        return path.endswith(".pdf")
+    except Exception:
+        return False
+
+def _is_pdf_content_type(resp) -> bool:
+    ct = (resp.headers.get("Content-Type") or "").lower()
+    return "pdf" in ct or ct.strip() == "application/octet-stream"
+
+def _fetch_pdf_bytes(url: str, timeout: int = 30) -> bytes:
+    try:
+        h = requests.head(url, timeout=timeout, allow_redirects=True)
+        if h.ok and not _is_pdf_content_type(h):
+            pass
+    except Exception:
+        pass
+
+    r = requests.get(url, timeout=timeout, allow_redirects=True, stream=True)
+    r.raise_for_status()
+    total = 0
+    chunks: List[bytes] = []
+    for chunk in r.iter_content(1024 * 64):
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > 15 * 1024 * 1024:
+            break  # 15 MB cap
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+def _pdf_bytes_to_text_pypdf(blob: bytes, max_pages: int = 8) -> str:
+    from pypdf import PdfReader
+    try:
+        reader = PdfReader(io.BytesIO(blob))
+        out = []
+        for i, page in enumerate(reader.pages):
+            if i >= max_pages:
+                break
+            try:
+                txt = page.extract_text() or ""
+            except Exception:
+                txt = ""
+            if txt:
+                out.append(txt)
+        return "\n".join(out).strip()
+    except Exception:
+        return ""
+
 def _find_item_by_guid(guid: str) -> Optional[dict]:
     items = db.list_items(limit=20000)
     for it in items:
@@ -300,13 +376,11 @@ def ai_summary(req: AISummaryReq):
     link  = (item.get("link")  or "").strip()
     text  = (item.get("content") or item.get("summary") or "").strip()
 
-    # If DB text is a PDF placeholder or the link looks like a PDF, try to extract PDF text on-demand
     wants_pdf = ("[PDF document" in text) or _is_pdf_link(link)
     if wants_pdf and link:
         try:
             blob = _fetch_pdf_bytes(link)
-            extracted = _pdf_bytes_to_text_pypdf(blob, max_pages=8)  # or _pdf_bytes_to_text_pdfminer
-            # If the PDF is scanned (no text), extracted will be empty
+            extracted = _pdf_bytes_to_text_pypdf(blob, max_pages=8)
             if extracted:
                 text = extracted
             else:
@@ -326,62 +400,95 @@ def ai_summary(req: AISummaryReq):
     summary = _generate_ai_summary(title, text, limit_words=100)
     return JSONResponse({"ok": True, "summary": summary})
 
-
-# --- PDF helpers ------------------------------------------------------------
-import requests, io
-from urllib.parse import urlparse
-
-def _is_pdf_link(url: str) -> bool:
+# ---------------------------------------------------------------------------
+# Auth helpers & routes
+# ---------------------------------------------------------------------------
+def get_user_id(request: Request) -> int | None:
     try:
-        path = urlparse(url).path.lower()
-        return path.endswith(".pdf")
+        return request.session.get("uid")
     except Exception:
-        return False
+        return None
 
-def _is_pdf_content_type(head_resp) -> bool:
-    ct = (head_resp.headers.get("Content-Type") or "").lower()
-    return "pdf" in ct or ct.strip() == "application/octet-stream"
+def require_user(request: Request) -> int:
+    uid = get_user_id(request)
+    if not uid:
+        raise HTTPException(401, "Login required")
+    return uid
 
-def _fetch_pdf_bytes(url: str, timeout: int = 30) -> bytes:
-    # quick HEAD to verify content-type if possible
-    try:
-        h = requests.head(url, timeout=timeout, allow_redirects=True)
-        if h.ok and not _is_pdf_content_type(h):
-            # Some servers lie on HEAD; we’ll still try GET next.
-            pass
-    except Exception:
-        pass
+@app.get("/account/login", response_class=HTMLResponse)
+def login_page(request: Request):
+    return render(request, "login.html", {"error": ""})
 
-    r = requests.get(url, timeout=timeout, allow_redirects=True, stream=True)
-    r.raise_for_status()
-    # basic guardrail: limit to ~15 MB
-    total = 0
-    chunks = []
-    for chunk in r.iter_content(1024 * 64):
-        if not chunk:
-            break
-        total += len(chunk)
-        if total > 15 * 1024 * 1024:
-            break  # stop at 15MB to avoid huge downloads
-        chunks.append(chunk)
-    return b"".join(chunks)
+@app.post("/account/login")
+def login(request: Request, email: str = Form(...), password: str = Form(...)):
+    user = db.get_user_by_email(email)
+    if not user or not bcrypt.verify(password, user["password_hash"]):
+        return render(request, "login.html", {"error": "Invalid credentials"})
+    request.session["uid"] = user["id"]
+    return RedirectResponse(url="/summaries", status_code=302)
 
-# ---- A) Using pypdf
-def _pdf_bytes_to_text_pypdf(blob: bytes, max_pages: int = 8) -> str:
-    from pypdf import PdfReader
-    try:
-        reader = PdfReader(io.BytesIO(blob))
-        out = []
-        for i, page in enumerate(reader.pages):
-            if i >= max_pages:
-                break
-            try:
-                txt = page.extract_text() or ""
-            except Exception:
-                txt = ""
-            if txt:
-                out.append(txt)
-        return "\n".join(out).strip()
-    except Exception:
-        return ""
+@app.get("/account/register", response_class=HTMLResponse)
+def register_page(request: Request):
+    return render(request, "register.html", {"error": ""})
 
+@app.post("/account/register")
+def register(
+    request: Request,
+    email: str = Form(...),
+    password: str = Form(...),
+    confirm: str = Form(...),
+):
+    if password != confirm:
+        return render(request, "register.html", {"error": "Passwords do not match"})
+    if db.get_user_by_email(email):
+        return render(request, "register.html", {"error": "Email already registered"})
+    uid = db.create_user(email, bcrypt.hash(password))
+    request.session["uid"] = uid
+    return RedirectResponse(url="/summaries", status_code=302)
+
+@app.post("/account/logout")
+def logout(request: Request):
+    request.session.clear()
+    return RedirectResponse(url="/summaries", status_code=302)
+
+# ---------------------------------------------------------------------------
+# Folders & Saved items
+# ---------------------------------------------------------------------------
+class FolderIn(BaseModel):
+    name: str
+
+@app.get("/api/folders")
+def api_folders(request: Request):
+    uid = require_user(request)
+    return {"folders": db.list_folders(uid)}
+
+@app.post("/api/folders")
+def api_create_folder(request: Request, payload: FolderIn):
+    uid = require_user(request)
+    fid = db.create_folder(uid, payload.name)
+    if not fid:
+        raise HTTPException(400, "Invalid folder name")
+    return {"ok": True, "id": fid}
+
+class SaveIn(BaseModel):
+    guid: str
+    folder_id: int | None = None
+
+@app.post("/api/save")
+def api_save(request: Request, payload: SaveIn):
+    uid = require_user(request)
+    db.save_item(uid, payload.guid, payload.folder_id)
+    return {"ok": True}
+
+@app.delete("/api/save/{guid}")
+def api_unsave(request: Request, guid: str):
+    uid = require_user(request)
+    db.unsave_item(uid, guid)
+    return {"ok": True}
+
+@app.get("/saved", response_class=HTMLResponse)
+def saved_page(request: Request, folder_id: int | None = None):
+    uid = require_user(request)
+    folders = db.list_folders(uid)
+    items = db.list_saved_items(uid, folder_id=folder_id)
+    return render(request, "saved.html", {"folders": folders, "items": items, "active_folder": folder_id})
