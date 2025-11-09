@@ -7,3 +7,4 @@ pydantic==2.9.2
 python-dateutil==2.9.0.post0
 tenacity==8.5.0
 openai==1.51.2
+lxml==5.3.0
