@@ -65,17 +65,17 @@
       <form method="get" id="source-form">
         <h3 style="margin-top:0;">Sources</h3>
 
-        <!-- Select/Unselect all for Sources -->
         <div class="row" style="gap:.35rem; margin:.25rem 0 .5rem;">
           <button type="button" class="btn small" id="selectAllSources">Select all</button>
           <button type="button" class="btn small" id="clearAllSources">Unselect all</button>
         </div>
 
         {% for s in all_sources %}
-          <label class="chk">
-            <input type="checkbox" name="sources" value="{{ s }}" {% if s in active.sources %}checked{% endif %}>
-            <span style="text-transform:capitalize">{{ s }}</span>
-          </label>
+            <label class="chk">
+              <input type="checkbox" name="sources" value="{{ s }}"
+                     {% if s in active.sources %}checked{% endif %}>
+              <span style="text-transform:capitalize">{{ s }}</span>
+            </label>
         {% endfor %}
         <input type="hidden" name="q" value="{{ active.q }}">
         <input type="hidden" name="date_from" value="{{ active.date_from }}">
@@ -112,27 +112,23 @@
         <input type="date" name="date_from" value="{{ active.date_from }}">
         <input type="date" name="date_to" value="{{ active.date_to }}">
 
-        <!-- Topic dropdown (checkbox style) -->
         <div class="dropdown" id="topicDropdown">
           <button type="button" id="topicToggle" aria-haspopup="true" aria-expanded="false">Topics ▾</button>
           <div class="dropdown-menu" role="menu" aria-label="Topics">
-
-            <!-- Select/Unselect all for Topics -->
             <div class="row" style="gap:.35rem; margin-bottom:.5rem;">
               <button type="button" class="btn small" id="selectAllTopics">Select all</button>
               <button type="button" class="btn small" id="clearAllTopics">Unselect all</button>
             </div>
-
             {% for t in all_topics %}
               <label>
-                <input type="checkbox" name="topics" value="{{ t }}" {% if t in active.topics %}checked{% endif %}>
+                <input type="checkbox" name="topics" value="{{ t }}"
+                  {% if (not active.topics) or (t in active.topics) %}checked{% endif %}>
                 {{ t }}
               </label>
             {% endfor %}
           </div>
         </div>
 
-        <!-- keep selected sources -->
         {% for s in active.sources %}
           <input type="hidden" name="sources" value="{{ s }}">
         {% endfor %}
@@ -231,7 +227,7 @@
   <script>
     // Auto-submit sources form when changed
     const f = document.getElementById('source-form');
-    if (f) f.addEventListener('change', () => f.submit());
+
 
     // Topic dropdown toggle
     const dropdown = document.getElementById('topicDropdown');
@@ -249,7 +245,33 @@
       });
     }
 
-    // AI modal logic
+    // ---------- Select/Unselect All ----------
+// ---------- Select/Unselect All (Sources) ----------
+const sourceForm = document.getElementById('source-form');
+const selectAllSourcesBtn = document.getElementById('selectAllSources');
+const clearAllSourcesBtn  = document.getElementById('clearAllSources');
+
+function setAllSources(checked) {
+  document
+    .querySelectorAll('#source-form input[type="checkbox"][name="sources"]')
+    .forEach(cb => { cb.checked = checked; });
+  // Do NOT auto-submit; user will press Apply
+}
+
+selectAllSourcesBtn?.addEventListener('click', () => setAllSources(true));
+clearAllSourcesBtn?.addEventListener('click', () => setAllSources(false));
+
+
+    // Topics – user confirms with the main Filter button
+    const selectAllTopicsBtn = document.getElementById('selectAllTopics');
+    const clearAllTopicsBtn  = document.getElementById('clearAllTopics');
+    function setAllTopics(checked) {
+      document.querySelectorAll('#topicDropdown .dropdown-menu input[type="checkbox"][name="topics"]').forEach(cb => { cb.checked = checked; });
+    }
+    selectAllTopicsBtn?.addEventListener('click', () => setAllTopics(true));
+    clearAllTopicsBtn?.addEventListener('click', () => setAllTopics(false));
+
+    // ---------- AI modal logic ----------
     const aiModal = document.getElementById('aiModal');
     const aiModalBody = document.getElementById('aiModalBody');
     const aiModalClose = document.getElementById('aiModalClose');
@@ -289,9 +311,79 @@
       });
     });
 
+    // ---------- Save modal wiring ----------
+    (function(){
+      let pendingGuid = null;
+
+      function openSaveModal(guid){
+        pendingGuid = guid;
+        const modal = document.getElementById('saveModal');
+        modal.style.display = 'flex';
+        modal.setAttribute('aria-hidden','false');
+        loadFolders();
+      }
+      function closeSaveModal(){
+        pendingGuid = null;
+        const modal = document.getElementById('saveModal');
+        modal.style.display = 'none';
+        modal.setAttribute('aria-hidden','true');
+      }
+      async function loadFolders(){
+        const sel = document.getElementById('folderSelect');
+        sel.innerHTML = '<option value="">(No folder)</option>';
+        try{
+          const r = await fetch('/api/folders', { credentials: 'same-origin' });
+          if(r.status === 401){ alert('Please sign in to save.'); closeSaveModal(); return; }
+          const data = await r.json();
+          (data.folders || []).forEach(f=>{
+            const o=document.createElement('option'); o.value=f.id; o.textContent=f.name; sel.appendChild(o);
+          });
+        }catch(e){ console.error(e); }
+      }
+      async function createFolder(){
+        const input = document.getElementById('newFolderName');
+        const name  = (input.value||'').trim();
+        if(!name){ alert('Enter a folder name'); return; }
+        try{
+          const r = await fetch('/api/folders', {
+            method:'POST',
+            headers:{'Content-Type':'application/json'},
+            credentials:'same-origin',
+            body: JSON.stringify({ name })
+          });
+          if(r.status === 401){ alert('Please sign in to create folders.'); location.href='/account/login'; return; }
+          if(!r.ok){ const err = await r.json().catch(()=>({})); alert(err.detail || 'Failed to create folder.'); return; }
+          input.value = '';
+          await loadFolders();
+        }catch(e){ console.error(e); alert('Network error while creating the folder.'); }
+      }
+      async function saveItem(){
+        if(!pendingGuid) return;
+        const folder_id = document.getElementById('folderSelect').value || null;
+        const r = await fetch('/api/save', {
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          credentials:'same-origin',
+          body: JSON.stringify({guid: pendingGuid, folder_id: folder_id ? Number(folder_id) : null})
+        });
+        if(r.status === 401){ alert('Please sign in to save.'); return; }
+        if(!r.ok){ alert('Failed to save.'); return; }
+        closeSaveModal();
+      }
+
+      document.querySelectorAll('.save-btn').forEach(b=>{
+        b.addEventListener('click', ()=> openSaveModal(b.getAttribute('data-guid')));
+      });
+      document.getElementById('createFolderBtn')?.addEventListener('click', createFolder);
+      document.getElementById('saveConfirm')?.addEventListener('click', saveItem);
+      document.getElementById('saveCancel')?.addEventListener('click', closeSaveModal);
+      document.getElementById('saveModal')?.addEventListener('click', (e)=>{ if(e.target.id==='saveModal') closeSaveModal(); });
+    })();
+
     // -------- Saved filters (create/list/apply/delete) ----------
     async function loadSaved() {
       const list = document.getElementById('savedList');
+      if (!list) return;
       list.innerHTML = '<div class="muted">Loading…</div>';
       try {
         const r = await fetch('/api/saved-filters');
@@ -330,136 +422,30 @@
         list.innerHTML = '<div class="muted">Failed to load saved filters.</div>';
       }
     }
-
-    function currentParamsFromUI() {
-      const url = new URL(window.location.href);
-      const params = new URLSearchParams(url.search);
-      const obj = {};
-      ['q','date_from','date_to','per_page'].forEach(k => {
-        const v = params.get(k);
-        if (v) obj[k] = v;
-      });
-      ['sources','topics'].forEach(k => {
-        const vals = [...params.getAll(k)];
-        if (vals.length) obj[k] = vals;
-      });
-      return obj;
-    }
-
-    async function saveCurrentFilter() {
+    document.getElementById('saveFilter')?.addEventListener('click', async (e) => {
+      e.preventDefault();
       const nameInput = document.getElementById('saveName');
       const name = (nameInput.value || '').trim();
       if (!name) { alert('Name your filter first.'); return; }
-      const params = currentParamsFromUI();
+      const url = new URL(window.location.href);
+      const params = new URLSearchParams(url.search);
+      const payload = { name, params: {} };
+      ['q','date_from','date_to','per_page'].forEach(k => { const v = params.get(k); if (v) payload.params[k] = v; });
+      ['sources','topics'].forEach(k => { const vals = [...params.getAll(k)]; if (vals.length) payload.params[k] = vals; });
       const res = await fetch('/api/saved-filters', {
         method: 'POST',
         headers: { 'Content-Type':'application/json' },
-        body: JSON.stringify({ name, params })
+        body: JSON.stringify(payload)
       });
       if (!res.ok) { alert('Failed to save filter.'); return; }
       nameInput.value = '';
       loadSaved();
-    }
-
-    document.getElementById('saveFilter').addEventListener('click', (e) => {
-      e.preventDefault();
-      saveCurrentFilter();
     });
-    document.getElementById('refreshSaved').addEventListener('click', (e) => {
+    document.getElementById('refreshSaved')?.addEventListener('click', (e) => {
       e.preventDefault();
       loadSaved();
     });
     loadSaved();
-
-    // ---------- Select/Unselect All ----------
-    // Sources – submit immediately (auto-submit UX)
-    const sourceForm = document.getElementById('source-form');
-    const selectAllSourcesBtn = document.getElementById('selectAllSources');
-    const clearAllSourcesBtn  = document.getElementById('clearAllSources');
-    function setAllSources(checked) {
-      document.querySelectorAll('#source-form input[type="checkbox"][name="sources"]').forEach(cb => { cb.checked = checked; });
-      sourceForm?.submit();
-    }
-    selectAllSourcesBtn?.addEventListener('click', () => setAllSources(true));
-    clearAllSourcesBtn?.addEventListener('click', () => setAllSources(false));
-
-    // Topics – user confirms with main Filter button
-    const selectAllTopicsBtn = document.getElementById('selectAllTopics');
-    const clearAllTopicsBtn  = document.getElementById('clearAllTopics');
-    function setAllTopics(checked) {
-      document.querySelectorAll('#topicDropdown .dropdown-menu input[type="checkbox"][name="topics"]').forEach(cb => { cb.checked = checked; });
-      // To auto-apply:
-      // document.querySelector('main form.inline')?.submit();
-    }
-    selectAllTopicsBtn?.addEventListener('click', () => setAllTopics(true));
-    clearAllTopicsBtn?.addEventListener('click', () => setAllTopics(false));
-
-    // ---------- Save modal wiring ----------
-    (function(){
-      let pendingGuid = null;
-
-      function openSaveModal(guid){
-        pendingGuid = guid;
-        const modal = document.getElementById('saveModal');
-        modal.style.display = 'flex';
-        modal.setAttribute('aria-hidden','false');
-        loadFolders();
-      }
-      function closeSaveModal(){
-        pendingGuid = null;
-        const modal = document.getElementById('saveModal');
-        modal.style.display = 'none';
-        modal.setAttribute('aria-hidden','true');
-      }
-      async function loadFolders(){
-        const sel = document.getElementById('folderSelect');
-        sel.innerHTML = '<option value="">(No folder)</option>';
-        try{
-          const r = await fetch('/api/folders');
-          if(r.status === 401){ alert('Please sign in to save.'); closeSaveModal(); return; }
-          const data = await r.json();
-          (data.folders || []).forEach(f=>{
-            const o=document.createElement('option'); o.value=f.id; o.textContent=f.name; sel.appendChild(o);
-          });
-        }catch(e){ console.error(e); }
-      }
-      async function createFolder(){
-        const input = document.getElementById('newFolderName');
-        const name  = (input.value||'').trim();
-        if(!name){ alert('Enter a folder name'); return; }
-        try{
-          const r = await fetch('/api/folders', {
-            method:'POST',
-            headers:{'Content-Type':'application/json'},
-            body: JSON.stringify({ name })
-          });
-          if(r.status === 401){ alert('Please sign in to create folders.'); location.href='/account/login'; return; }
-          if(!r.ok){ const err = await r.json().catch(()=>({})); alert(err.detail || 'Failed to create folder.'); return; }
-          input.value = '';
-          await loadFolders();
-        }catch(e){ console.error(e); alert('Network error while creating the folder.'); }
-      }
-      async function saveItem(){
-        if(!pendingGuid) return;
-        const folder_id = document.getElementById('folderSelect').value || null;
-        const r = await fetch('/api/save', {
-          method:'POST',
-          headers:{'Content-Type':'application/json'},
-          body: JSON.stringify({guid: pendingGuid, folder_id: folder_id ? Number(folder_id) : null})
-        });
-        if(r.status === 401){ alert('Please sign in to save.'); return; }
-        if(!r.ok){ alert('Failed to save.'); return; }
-        closeSaveModal();
-      }
-
-      document.querySelectorAll('.save-btn').forEach(b=>{
-        b.addEventListener('click', ()=> openSaveModal(b.getAttribute('data-guid')));
-      });
-      document.getElementById('createFolderBtn')?.addEventListener('click', createFolder);
-      document.getElementById('saveConfirm')?.addEventListener('click', saveItem);
-      document.getElementById('saveCancel')?.addEventListener('click', closeSaveModal);
-      document.getElementById('saveModal')?.addEventListener('click', (e)=>{ if(e.target.id==='saveModal') closeSaveModal(); });
-    })();
   </script>
 </body>
 </html>
