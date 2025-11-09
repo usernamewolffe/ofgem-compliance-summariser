@@ -295,10 +295,93 @@ def ai_summary(req: AISummaryReq):
     item = _find_item_by_guid(req.guid)
     if not item:
         raise HTTPException(status_code=404, detail="Item not found")
-    text = item.get("content") or item.get("summary") or ""
-    title = item.get("title") or ""
-    if not text or "[PDF document" in text:
-        return JSONResponse(
-            {"ok": True, "summary": "This entry is a PDF or has no readable text — open the link to view."})
+
+    title = (item.get("title") or "").strip()
+    link  = (item.get("link")  or "").strip()
+    text  = (item.get("content") or item.get("summary") or "").strip()
+
+    # If DB text is a PDF placeholder or the link looks like a PDF, try to extract PDF text on-demand
+    wants_pdf = ("[PDF document" in text) or _is_pdf_link(link)
+    if wants_pdf and link:
+        try:
+            blob = _fetch_pdf_bytes(link)
+            extracted = _pdf_bytes_to_text_pypdf(blob, max_pages=8)  # or _pdf_bytes_to_text_pdfminer
+            # If the PDF is scanned (no text), extracted will be empty
+            if extracted:
+                text = extracted
+            else:
+                return JSONResponse({
+                    "ok": True,
+                    "summary": "This PDF appears to be image-based or has no extractable text. Please open the document to view."
+                })
+        except Exception:
+            return JSONResponse({
+                "ok": True,
+                "summary": "Could not fetch or parse the PDF for summary. Please open the document to view."
+            })
+
+    if not text:
+        return JSONResponse({"ok": True, "summary": "No content available to summarise."})
+
     summary = _generate_ai_summary(title, text, limit_words=100)
     return JSONResponse({"ok": True, "summary": summary})
+
+
+# --- PDF helpers ------------------------------------------------------------
+import requests, io
+from urllib.parse import urlparse
+
+def _is_pdf_link(url: str) -> bool:
+    try:
+        path = urlparse(url).path.lower()
+        return path.endswith(".pdf")
+    except Exception:
+        return False
+
+def _is_pdf_content_type(head_resp) -> bool:
+    ct = (head_resp.headers.get("Content-Type") or "").lower()
+    return "pdf" in ct or ct.strip() == "application/octet-stream"
+
+def _fetch_pdf_bytes(url: str, timeout: int = 30) -> bytes:
+    # quick HEAD to verify content-type if possible
+    try:
+        h = requests.head(url, timeout=timeout, allow_redirects=True)
+        if h.ok and not _is_pdf_content_type(h):
+            # Some servers lie on HEAD; we’ll still try GET next.
+            pass
+    except Exception:
+        pass
+
+    r = requests.get(url, timeout=timeout, allow_redirects=True, stream=True)
+    r.raise_for_status()
+    # basic guardrail: limit to ~15 MB
+    total = 0
+    chunks = []
+    for chunk in r.iter_content(1024 * 64):
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > 15 * 1024 * 1024:
+            break  # stop at 15MB to avoid huge downloads
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+# ---- A) Using pypdf
+def _pdf_bytes_to_text_pypdf(blob: bytes, max_pages: int = 8) -> str:
+    from pypdf import PdfReader
+    try:
+        reader = PdfReader(io.BytesIO(blob))
+        out = []
+        for i, page in enumerate(reader.pages):
+            if i >= max_pages:
+                break
+            try:
+                txt = page.extract_text() or ""
+            except Exception:
+                txt = ""
+            if txt:
+                out.append(txt)
+        return "\n".join(out).strip()
+    except Exception:
+        return ""
+
