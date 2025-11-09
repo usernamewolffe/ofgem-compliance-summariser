@@ -228,6 +228,13 @@ def _ensure_users_tables() -> None:
     _sql_exec("CREATE UNIQUE INDEX IF NOT EXISTS uq_folders_user_name ON folders(user_id, name COLLATE NOCASE)")
     _sql_exec("CREATE UNIQUE INDEX IF NOT EXISTS uq_saved_items_user_guid ON saved_items(user_id, guid)")
 
+    # Add ai_summary column if it doesn’t exist
+    try:
+        _sql_exec("ALTER TABLE items ADD COLUMN ai_summary TEXT")
+    except Exception:
+        pass
+
+
 def _get_user_by_email(email: str) -> Optional[dict]:
     return _sql_one("SELECT id, email, password_hash FROM users WHERE email = ?", (email,))
 
@@ -529,10 +536,18 @@ def _clean_extracted_text(title: str, text: str, max_chars: int = 12000) -> str:
         cleaned = cleaned[:max_chars]
     return cleaned
 
-def _generate_ai_summary(title: str, text: str, limit_words: int = 100) -> str:
+def _generate_ai_summary(title: str, text: str, limit_words: int = 100, guid: str | None = None) -> str:
+    """Generate or reuse cached AI summary (stores in items.ai_summary)."""
     text = (text or "").strip()
     if not text:
         return "No content available to summarise."
+
+    # Try to use cached summary first
+    if guid:
+        cached = _sql_one("SELECT ai_summary FROM items WHERE guid = ?", (guid,))
+        if cached and cached.get("ai_summary"):
+            return cached["ai_summary"]
+
     client = _openai_client()
     if not client:
         return _fallback_ai_summary(text, limit_words)
@@ -557,9 +572,15 @@ TEXT:
         words = out.split()
         if len(words) > limit_words:
             out = " ".join(words[:limit_words]) + "…"
+
+        # Cache the summary for next time
+        if guid:
+            _sql_exec("UPDATE items SET ai_summary = ? WHERE guid = ?", (out, guid))
+
         return out
     except Exception:
         return _fallback_ai_summary(text, limit_words)
+
 
 def _is_pdf_link(url: str) -> bool:
     try:
@@ -652,7 +673,8 @@ def ai_summary(req: AISummaryReq):
     # scrub nav/footer boilerplate etc.
     text = _clean_extracted_text(title, text)
 
-    summary = _generate_ai_summary(title, text, limit_words=100)
+    summary = _generate_ai_summary(title, text, limit_words=120, guid=req.guid)
+
     return JSONResponse({"ok": True, "summary": summary})
 
 # ---------------------------------------------------------------------------
