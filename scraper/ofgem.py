@@ -126,15 +126,43 @@ FILTERS = {
 
 BYPASS = os.getenv("BYPASS_FILTERS", "0") == "1"
 
+
 # --- Core utils --------------------------------------------------------------
 
 def _clean_text(html: str) -> str:
     if not isinstance(html, str):
         return ""
     soup = BeautifulSoup(html or "", "html.parser")
-    for tag in soup(["script", "style", "noscript"]):
-        tag.decompose()
-    return re.sub(r"\s+", " ", soup.get_text(separator=" ")).strip()
+    for sel in [
+        "script", "style", "noscript",
+        "header", "footer", "nav", "aside",
+        "[role='navigation']", "[role='search']",
+        ".cookie", ".cookie-banner", "#cookie-banner",
+        ".search", "#search", ".sr-only", ".skip-link",
+        "form[role='search']"
+    ]:
+        for t in soup.select(sel):
+            t.decompose()
+    text = soup.get_text(separator=" ")
+    text = re.sub(r"(skip to main content|sign in|register|search|toggle menu|show/hide menu)", " ", text, flags=re.I)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+
+def _is_pdf_url(url: str) -> bool:
+    """Return True if the URL points to a PDF (by path or Content-Type)."""
+    try:
+        # Quick check by extension
+        if urlparse(url).path.lower().endswith(".pdf"):
+            return True
+        # HEAD check to confirm content-type
+        h = requests.head(url, headers=HEADERS, timeout=15, allow_redirects=True)
+        ct = (h.headers.get("Content-Type") or "").lower()
+        return "pdf" in ct
+    except Exception:
+        # On any error, be conservative and treat as non-PDF to avoid blocking content
+        return False
+
 
 def _fetch(url: str, tries: int = 3, backoff: float = 1.6) -> str:
     last_err = None
@@ -333,14 +361,22 @@ def _scrape_ena_news(url: str):
 def _scrape_neso_news(url: str):
     html = _fetch(url)
     soup = BeautifulSoup(html, "html.parser")
-    # NESO media centre/press release cards + generic fallbacks
-    for a in soup.select("a[href*='/news-and-events/'], a[href*='/press-release'], article a"):
+    for a in soup.select("a[href*='/news-and-events/']"):
         href = a.get("href")
         title = (a.get_text(strip=True) or "").strip()
         if not href or not title:
             continue
         link = urljoin(url, href)
+        path = urlparse(link).path.rstrip("/").lower()
+
+        # skip index/pagination/category hubs
+        if any(x in path for x in ("/media-centre", "/news-and-events")) and path.count("/") <= 4:
+            continue
+        if "page=" in link:
+            continue
+
         yield {"link": link, "title": title, "id": link, "published": None, "summary": ""}
+
 
 # --- Main collector ----------------------------------------------------------
 
@@ -411,7 +447,11 @@ def collect_items():
             summary_html = e.get("summary") or e.get("description") or ""
             content = _clean_text(summary_html) if isinstance(summary_html, str) and summary_html else ""
             if not content and link:
-                content = _extract_article(link)
+                if _is_pdf_url(link):
+                    # Don’t inline binary; show a simple note so UI stays clean.
+                    content = "[PDF document – open the title link to view]"
+                else:
+                    content = _extract_article(link)
 
             if not _passes_filters(base_src, title, content):
                 skipped += 1
