@@ -2,20 +2,63 @@
 <html>
 <head>
   <meta charset="utf-8">
-  <title>My saved</title>
+  <title>My Saved Items</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
-    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;margin:1rem}
-    .wrap{display:grid;grid-template-columns:260px 1fr;gap:1rem}
-    aside{border:1px solid #eee;border-radius:12px;padding:1rem}
-    .cards{list-style:none;padding:0;display:grid;gap:.75rem}
-    .card{border:1px solid #eee;border-radius:12px;padding:1rem}
-    .btn{background:#fff;border:1px solid #ccc;border-radius:6px;padding:.35rem .6rem;cursor:pointer}
-    .btn.small{font-size:.85rem;padding:.25rem .5rem}
-    .muted{color:#666}
-    .folder-active{font-weight:700}
-    input[type="text"]{width:100%;padding:.45rem .6rem;border:1px solid #ccc;border-radius:6px}
-    .row{display:flex;gap:.5rem;margin-top:.5rem}
+    body {
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      margin: 1rem;
+    }
+    .wrap {
+      display: grid;
+      grid-template-columns: 260px 1fr;
+      gap: 1rem;
+    }
+    aside {
+      border: 1px solid #eee;
+      border-radius: 12px;
+      padding: 1rem;
+    }
+    .cards {
+      list-style: none;
+      padding: 0;
+      display: grid;
+      gap: .75rem;
+    }
+    .card {
+      border: 1px solid #eee;
+      border-radius: 12px;
+      padding: 1rem;
+      transition: opacity .3s ease;
+    }
+    .btn {
+      background: #fff;
+      border: 1px solid #ccc;
+      border-radius: 6px;
+      padding: .35rem .6rem;
+      cursor: pointer;
+    }
+    .btn.small {
+      font-size: .85rem;
+      padding: .25rem .5rem;
+    }
+    .muted {
+      color: #666;
+    }
+    .folder-active {
+      font-weight: 700;
+    }
+    input[type="text"] {
+      width: 100%;
+      padding: .45rem .6rem;
+      border: 1px solid #ccc;
+      border-radius: 6px;
+    }
+    .row {
+      display: flex;
+      gap: .5rem;
+      margin-top: .5rem;
+    }
   </style>
 </head>
 <body>
@@ -69,18 +112,21 @@
     </h2>
 
     {% if error %}
-      <div class="card" style="border-color:#f3c2c2;background:#fff7f7;color:#8a1f1f">{{ error }}</div>
+      <div class="card" style="border-color:#f3c2c2;background:#fff7f7;color:#8a1f1f">
+        {{ error }}
+      </div>
     {% endif %}
 
     <ul class="cards">
       {% for it in items %}
-        <li class="card">
+        <li class="card" data-guid="{{ it.guid|e }}">
           <div><a href="{{ it.link }}" target="_blank" rel="noopener">{{ it.title }}</a></div>
-          <div class="muted">{{ it.published_at }}{% if it.folder %} · Folder: {{ it.folder }}{% endif %}</div>
+          <div class="muted">
+            {{ it.published_at }}
+            {% if it.folder %} · Folder: {{ it.folder }}{% endif %}
+          </div>
           <div style="margin-top:.5rem;">
-            <!-- FIXED: pass GUID as quoted string & close paren -->
             <button class="btn small" data-guid="{{ it.guid|e }}" onclick="removeSaved('{{ it.guid|e }}')">Remove</button>
-
           </div>
         </li>
       {% else %}
@@ -92,11 +138,9 @@
 
 <script>
 async function removeSaved(guid){
-  // Confirm first
   const ok = window.confirm("Remove this item from your saved list?");
   if(!ok) return;
 
-  // Find the clicked button (optional nicety)
   const btns = document.querySelectorAll(`button[data-guid="${CSS.escape(guid)}"]`);
   btns.forEach(b => { b.disabled = true; b.textContent = "Removing…"; });
 
@@ -111,14 +155,22 @@ async function removeSaved(guid){
       btns.forEach(b => { b.disabled = false; b.textContent = "Remove"; });
       return;
     }
-    location.reload();
+
+    // Smoothly remove card
+    const card = btns[0]?.closest('.card');
+    if (card) {
+      card.style.opacity = 0.3;
+      setTimeout(() => card.remove(), 300);
+    } else {
+      location.reload();
+    }
+
   }catch(err){
     alert('Failed to remove.\n' + (err?.message || err));
     btns.forEach(b => { b.disabled = false; b.textContent = "Remove"; });
   }
 }
 </script>
-
 
 </body>
 </html>
