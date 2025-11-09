@@ -242,3 +242,67 @@ class DB:
         with self._conn() as conn, closing(conn.cursor()) as cur:
             cur.execute("DELETE FROM saved_filters WHERE id = ?", (int(filter_id),))
             conn.commit()
+
+def init_auth(self):
+    with self.conn:
+        self.conn.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            email TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )""")
+        self.conn.execute("""
+        CREATE TABLE IF NOT EXISTS folders (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            UNIQUE(user_id, name),
+            FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+        )""")
+        self.conn.execute("""
+        CREATE TABLE IF NOT EXISTS saved_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            folder_id INTEGER,
+            guid TEXT NOT NULL,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(user_id, guid),
+            FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
+            FOREIGN KEY(folder_id) REFERENCES folders(id) ON DELETE SET NULL
+        )""")
+
+
+def get_user_by_email(self, email: str):
+    cur = self.conn.execute("SELECT * FROM users WHERE email=?", (email.lower().strip(),))
+    r = cur.fetchone()
+    return dict(r) if r else None
+
+def create_user(self, email: str, password_hash: str) -> int:
+    cur = self.conn.execute("INSERT INTO users (email, password_hash) VALUES (?,?)", (email.lower().strip(), password_hash))
+    return cur.lastrowid
+
+def get_user(self, uid: int):
+    cur = self.conn.execute("SELECT * FROM users WHERE id=?", (uid,))
+    r = cur.fetchone()
+    return dict(r) if r else None
+
+
+def list_folders(self, user_id: int):
+    cur = self.conn.execute("SELECT id, name FROM folders WHERE user_id=? ORDER BY name", (user_id,))
+    return [dict(r) for r in cur.fetchall()]
+
+def create_folder(self, user_id: int, name: str) -> int:
+    name = name.strip()
+    if not name:
+        return 0
+    cur = self.conn.execute("INSERT OR IGNORE INTO folders (user_id, name) VALUES (?,?)", (user_id, name))
+    if cur.lastrowid:
+        return cur.lastrowid
+    cur = self.conn.execute("SELECT id FROM folders WHERE user_id=? AND name=?", (user_id, name))
+    row = cur.fetchone()
+    return row[0] if row else 0
+
+def delete_folder(self, user_id: int, folder_id: int):
+    self.conn.execute("DELETE FROM folders WHERE id=? AND user_id=?", (folder_id, user_id))
+

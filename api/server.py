@@ -2,18 +2,20 @@
 from dotenv import load_dotenv
 load_dotenv()
 
-import os, csv, io, json
+import os, csv, io, json, requests, sqlite3
 from pathlib import Path
 from datetime import datetime
-from typing import Optional, List, Set, Dict, Any
+from typing import Optional, List, Set, Dict, Any, Tuple, Union
+from urllib.parse import urlparse, urlencode
 
-from fastapi import FastAPI, Request, Query, HTTPException, Form
-from starlette.middleware.sessions import SessionMiddleware
-from fastapi.responses import RedirectResponse, StreamingResponse, HTMLResponse, JSONResponse
+from fastapi import FastAPI, Request, Query, HTTPException, Form, Body
+from fastapi.responses import RedirectResponse, StreamingResponse, HTMLResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from starlette.middleware.sessions import SessionMiddleware
 from pydantic import BaseModel
-from passlib.hash import bcrypt
+from jinja2 import TemplateNotFound
+from passlib.context import CryptContext
 
 from storage.db import DB
 
@@ -24,10 +26,14 @@ TOPIC_TAGS = [
     "CAF/NIS", "Cyber", "Incident", "Consultation", "Guidance", "Enforcement", "Penalty"
 ]
 
+# Paths
+BASE_DIR = Path(__file__).resolve().parent.parent
+SQLITE_DB_PATH = (BASE_DIR / "ofgem.db").as_posix()
+
 # ---------------------------------------------------------------------------
 # App + plumbing
 # ---------------------------------------------------------------------------
-app = FastAPI()
+app = FastAPI(debug=True)
 
 app.add_middleware(
     SessionMiddleware,
@@ -36,31 +42,258 @@ app.add_middleware(
     https_only=False,
 )
 
+# Project DB wrapper
 db = DB("ofgem.db")
-# Ensure tables for users/folders/saved exist
-if hasattr(db, "init_auth"):
-    db.init_auth()
 
-# Static UI (legacy)
+# Static (optional legacy assets)
 app.mount("/static", StaticFiles(directory="api/static", html=True), name="static")
 
-# Templates
-BASE_DIR = Path(__file__).resolve().parent.parent
+# Templates: summariser/templates/summariser
 TEMPLATES_DIR = BASE_DIR / "summariser" / "templates" / "summariser"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
+# Password hashing context — new hashes use PBKDF2-SHA256 (no 72-byte limit).
+# We still accept old bcrypt / bcrypt_sha256 hashes on login.
+pwd_ctx = CryptContext(
+    schemes=["pbkdf2_sha256", "bcrypt_sha256", "bcrypt"],
+    default="pbkdf2_sha256",
+    deprecated="auto",
+)
+
 # ---------------------------------------------------------------------------
-# Render helper (avoid touching request.session in templates)
+# SQLite fallback layer (used only if DB wrapper lacks needed methods)
+# ---------------------------------------------------------------------------
+_sqlite_conn: Optional[sqlite3.Connection] = None
+
+def _get_sqlite_conn() -> sqlite3.Connection:
+    global _sqlite_conn
+    if _sqlite_conn is None:
+        _sqlite_conn = sqlite3.connect(SQLITE_DB_PATH, check_same_thread=False)
+        _sqlite_conn.row_factory = sqlite3.Row
+    return _sqlite_conn
+
+def _sql_exec(sql: str, params: Tuple = ()) -> None:
+    if hasattr(db, "exec"):
+        db.exec(sql, params)  # type: ignore[attr-defined]
+        return
+    if hasattr(db, "execute"):
+        db.execute(sql, params)  # type: ignore[attr-defined]
+        return
+    conn = _get_sqlite_conn()
+    with conn:
+        conn.execute(sql, params)
+
+def _sql_all(sql: str, params: Tuple = ()) -> List[dict]:
+    if hasattr(db, "all"):
+        return db.all(sql, params)  # type: ignore[attr-defined]
+    if hasattr(db, "query"):
+        return db.query(sql, params)  # type: ignore[attr-defined]
+    conn = _get_sqlite_conn()
+    cur = conn.execute(sql, params)
+    rows = cur.fetchall()
+    return [dict(r) for r in rows]
+
+def _sql_one(sql: str, params: Tuple = ()) -> Optional[dict]:
+    if hasattr(db, "one"):
+        return db.one(sql, params)  # type: ignore[attr-defined]
+    conn = _get_sqlite_conn()
+    cur = conn.execute(sql, params)
+    row = cur.fetchone()
+    return dict(row) if row else None
+
+
+
+# -----------------------------
+# Folder helpers (self-contained)
+# -----------------------------
+def _list_folders(user_id: int) -> List[dict]:
+    return _sql_all(
+        "SELECT id, name, created_at FROM folders WHERE user_id = ? ORDER BY LOWER(name)",
+        (user_id,),
+    )
+
+def _create_folder(user_id: int, name: str) -> int:
+    name = (name or "").strip()
+    if not name:
+        raise HTTPException(400, "Folder name cannot be empty")
+    if len(name) > 100:
+        raise HTTPException(400, "Folder name is too long (max 100 chars)")
+    try:
+        _sql_exec("INSERT INTO folders (user_id, name) VALUES (?, ?)", (user_id, name))
+    except Exception:
+        existing = _sql_one(
+            "SELECT id FROM folders WHERE user_id = ? AND name = ?",
+            (user_id, name),
+        )
+        if existing:
+            raise HTTPException(409, "Folder already exists")
+        raise
+    row = _sql_one(
+        "SELECT id FROM folders WHERE user_id = ? AND name = ?",
+        (user_id, name),
+    )
+    if not row:
+        raise HTTPException(500, "Failed to create folder")
+    return int(row["id"])
+
+def _unsave_item(user_id: int, guid: str) -> None:
+    _sql_exec("DELETE FROM saved_items WHERE user_id = ? AND guid = ?", (user_id, guid))
+
+# -----------------------------
+# Saved items helpers (self-contained)
+# -----------------------------
+def _save_item(user_id: int, guid: str, folder_id: int | None = None) -> None:
+    guid = (guid or "").strip()
+    if not guid:
+        raise HTTPException(400, "Missing guid")
+
+    # If a folder_id is provided, ensure it belongs to this user
+    if folder_id is not None:
+        owner = _sql_one("SELECT id FROM folders WHERE id = ? AND user_id = ?", (folder_id, user_id))
+        if not owner:
+            raise HTTPException(400, "Folder not found")
+
+    # Insert once only
+    _sql_exec(
+        "INSERT OR IGNORE INTO saved_items (user_id, guid, folder_id) VALUES (?, ?, ?)",
+        (user_id, guid, folder_id),
+    )
+
+def _unsave_item(user_id: int, guid: str) -> None:
+    _sql_exec("DELETE FROM saved_items WHERE user_id = ? AND guid = ?", (user_id, guid))
+
+def _list_saved_items(user_id: int, folder_id: int | None = None) -> list[dict]:
+    # Fetch saved rows
+    rows = _sql_all(
+        "SELECT id, guid, folder_id, created_at FROM saved_items "
+        "WHERE user_id = ? AND (? IS NULL OR folder_id = ?) "
+        "ORDER BY datetime(created_at) DESC",
+        (user_id, folder_id, folder_id),
+    )
+
+    # Pull all content items once; match by guid OR link fallback
+    items = db.list_items(limit=20000)  # existing helper
+    by_guid = {str(e.get("guid") or ""): e for e in items if e.get("guid")}
+    by_link = {str(e.get("link") or ""): e for e in items if e.get("link")}
+
+    out: list[dict] = []
+    for r in rows:
+        g = str(r.get("guid") or "")
+        e = by_guid.get(g) or by_link.get(g)
+        if not e:
+            # If the source item no longer exists, show a placeholder
+            e = {"title": "(item unavailable)", "link": "", "published_at": "", "guid": g, "source": ""}
+        # decorate with folder name if present
+        folder_name = None
+        if r.get("folder_id"):
+            f = _sql_one("SELECT name FROM folders WHERE id = ?", (r["folder_id"],))
+            folder_name = f["name"] if f else None
+
+        out.append({
+            "guid": e.get("guid") or g,
+            "title": e.get("title", ""),
+            "link": e.get("link", ""),
+            "published_at": e.get("published_at", ""),
+            "source": e.get("source", ""),
+            "folder": folder_name,
+        })
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Auth tables + helpers
+# ---------------------------------------------------------------------------
+def _ensure_users_tables() -> None:
+    _sql_exec("""
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            email TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+    """)
+    _sql_exec("""
+        CREATE TABLE IF NOT EXISTS folders (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+    """)
+    _sql_exec("""
+        CREATE TABLE IF NOT EXISTS saved_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            guid TEXT NOT NULL,
+            folder_id INTEGER,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+    """)
+    _sql_exec("""
+        CREATE TABLE IF NOT EXISTS saved_filters (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            params_json TEXT NOT NULL,
+            cadence TEXT
+        )
+    """)
+    # Uniqueness & case-insensitive folder names per user
+    _sql_exec("CREATE UNIQUE INDEX IF NOT EXISTS uq_folders_user_name ON folders(user_id, name COLLATE NOCASE)")
+    # Prevent duplicate saves of same guid by same user
+    _sql_exec("CREATE UNIQUE INDEX IF NOT EXISTS uq_saved_user_guid ON saved_items(user_id, guid)")
+    _sql_exec("CREATE UNIQUE INDEX IF NOT EXISTS uq_saved_items_user_guid ON saved_items(user_id, guid)")
+
+
+def _get_user_by_email(email: str) -> Optional[dict]:
+    return _sql_one("SELECT id, email, password_hash FROM users WHERE email = ?", (email,))
+
+def _create_user(email: str, password_hash: str) -> int:
+    _sql_exec("INSERT INTO users (email, password_hash) VALUES (?, ?)", (email, password_hash))
+    row = _sql_one("SELECT id FROM users WHERE email = ?", (email,))
+    if not row:
+        raise RuntimeError("Failed to create user")
+    return int(row["id"])
+
+@app.on_event("startup")
+def _startup():
+    if hasattr(db, "init_auth"):
+        try:
+            db.init_auth()  # type: ignore[attr-defined]
+        except Exception:
+            pass
+    _ensure_users_tables()
+
+# ---------------------------------------------------------------------------
+# Render helper
 # ---------------------------------------------------------------------------
 def render(request: Request, template_name: str, ctx: dict | None = None):
-    ctx = ctx or {}
+    ctx = dict(ctx or {})
     try:
         uid = request.session.get("uid")
     except Exception:
         uid = None
     ctx["uid"] = uid
     ctx["request"] = request
-    return templates.TemplateResponse(template_name, ctx)
+
+    try:
+        return templates.TemplateResponse(template_name, ctx)
+    except TemplateNotFound:
+        bare = Path(template_name).name
+        if bare != template_name:
+            try:
+                return templates.TemplateResponse(bare, ctx)
+            except TemplateNotFound as e2:
+                return PlainTextResponse(
+                    f"Template not found: '{template_name}' or '{bare}'.\n"
+                    f"Searched in: {templates.directory}\n\n{e2}",
+                    status_code=500,
+                )
+        return PlainTextResponse(
+            f"Template not found: '{template_name}'.\nSearched in: {templates.directory}",
+            status_code=500,
+        )
+    except Exception as e:
+        return PlainTextResponse(f"Template render error in '{template_name}':\n\n{e}", status_code=500)
 
 # ---------------------------------------------------------------------------
 # Basic routes
@@ -139,32 +372,24 @@ def summaries_page(
 
     filtered: List[dict] = []
     for e in all_items:
-        # text filter
         text = f"{e.get('title','')} {e.get('content','')} {e.get('summary','')}".lower()
         if q_lower and q_lower not in text:
             continue
-
-        # date filter
         if not in_date_range(e.get("published_at")):
             continue
 
-        # topic tag filter
         tags_raw = e.get("tags") or []
         tags = [t.lower() for t in (tags_raw if isinstance(tags_raw, list) else [])]
-
         if topic_set and not any(t in tags for t in topic_set):
             continue
 
-        # source filter
         if src_set and (e.get("source") not in src_set):
             continue
 
         filtered.append(e)
 
-    # Sort newest first
     filtered.sort(key=lambda e: e.get("published_at", ""), reverse=True)
 
-    # Pagination
     page = max(1, int(page))
     per_page = max(1, min(200, int(per_page)))
     total = len(filtered)
@@ -174,7 +399,6 @@ def summaries_page(
     total_pages = (total + per_page - 1) // per_page if total else 1
     page_numbers = list(range(max(1, page - 2), min(total_pages, page + 2) + 1))
 
-    # Available sources for sidebar
     all_sources = sorted({(i.get("source") or "").strip() for i in all_items if i.get("source")})
 
     return render(
@@ -203,8 +427,8 @@ def summaries_page(
 # ---------------------------------------------------------------------------
 class SavedFilterIn(BaseModel):
     name: str
-    params: Dict[str, Any]  # whatever you’d put on /summaries
-    cadence: Optional[str] = None  # 'daily', 'weekly', etc. (optional)
+    params: Dict[str, Any]
+    cadence: Optional[str] = None
 
 @app.get("/api/saved-filters")
 def list_saved_filters():
@@ -237,7 +461,6 @@ def apply_saved_filter(filter_id: int):
         raise HTTPException(status_code=404, detail="Filter not found")
     try:
         params = json.loads(rec["params_json"])
-        from urllib.parse import urlencode
         query_items: List[tuple[str, str]] = []
         for k, v in params.items():
             if v is None or v == "":
@@ -304,10 +527,6 @@ TEXT:
         return out
     except Exception:
         return _fallback_ai_summary(text, limit_words)
-
-# --- PDF helpers ------------------------------------------------------------
-import requests
-from urllib.parse import urlparse
 
 def _is_pdf_link(url: str) -> bool:
     try:
@@ -415,39 +634,50 @@ def require_user(request: Request) -> int:
         raise HTTPException(401, "Login required")
     return uid
 
-@app.get("/account/login", response_class=HTMLResponse)
-def login_page(request: Request):
-    return render(request, "login.html", {"error": ""})
+# Aliases
+@app.get("/login")
+def login_alias():
+    return RedirectResponse("/account/login", status_code=308)
 
+@app.get("/register")
+def register_alias():
+    return RedirectResponse("/account/register", status_code=308)
+
+# Account pages (GET)
+@app.get("/account/login", response_class=HTMLResponse)
+def account_login_get(request: Request):
+    return render(request, "account/login.html", {"error": ""})
+
+@app.get("/account/register", response_class=HTMLResponse)
+def account_register_get(request: Request):
+    return render(request, "account/register.html", {"error": ""})
+
+# Account actions (POST)
 @app.post("/account/login")
-def login(request: Request, email: str = Form(...), password: str = Form(...)):
-    user = db.get_user_by_email(email)
-    if not user or not bcrypt.verify(password, user["password_hash"]):
-        return render(request, "login.html", {"error": "Invalid credentials"})
+def account_login_post(request: Request, email: str = Form(...), password: str = Form(...)):
+    user = _get_user_by_email(email)
+    if not user or not pwd_ctx.verify(password, user["password_hash"]):
+        return render(request, "account/login.html", {"error": "Invalid credentials"})
     request.session["uid"] = user["id"]
     return RedirectResponse(url="/summaries", status_code=302)
 
-@app.get("/account/register", response_class=HTMLResponse)
-def register_page(request: Request):
-    return render(request, "register.html", {"error": ""})
-
 @app.post("/account/register")
-def register(
+def account_register_post(
     request: Request,
     email: str = Form(...),
     password: str = Form(...),
     confirm: str = Form(...),
 ):
     if password != confirm:
-        return render(request, "register.html", {"error": "Passwords do not match"})
-    if db.get_user_by_email(email):
-        return render(request, "register.html", {"error": "Email already registered"})
-    uid = db.create_user(email, bcrypt.hash(password))
+        return render(request, "account/register.html", {"error": "Passwords do not match"})
+    if _get_user_by_email(email):
+        return render(request, "account/register.html", {"error": "Email already registered"})
+    uid = _create_user(email, pwd_ctx.hash(password))
     request.session["uid"] = uid
     return RedirectResponse(url="/summaries", status_code=302)
 
 @app.post("/account/logout")
-def logout(request: Request):
+def account_logout_post(request: Request):
     request.session.clear()
     return RedirectResponse(url="/summaries", status_code=302)
 
@@ -460,35 +690,74 @@ class FolderIn(BaseModel):
 @app.get("/api/folders")
 def api_folders(request: Request):
     uid = require_user(request)
-    return {"folders": db.list_folders(uid)}
+    return {"folders": _list_folders(uid)}
 
 @app.post("/api/folders")
 def api_create_folder(request: Request, payload: FolderIn):
     uid = require_user(request)
-    fid = db.create_folder(uid, payload.name)
-    if not fid:
-        raise HTTPException(400, "Invalid folder name")
+    fid = _create_folder(uid, payload.name)
     return {"ok": True, "id": fid}
 
 class SaveIn(BaseModel):
     guid: str
     folder_id: int | None = None
 
+# HTML form to create a folder from /saved sidebar
+@app.post("/folders/new")
+def folders_new(request: Request, name: str = Form(...)):
+    uid = require_user(request)
+    try:
+        _create_folder(uid, name)
+        return RedirectResponse(url="/saved", status_code=302)
+    except HTTPException as e:
+        folders = _list_folders(uid)
+        items = db.list_saved_items(uid, folder_id=None)
+        return render(request, "saved.html", {
+            "folders": folders,
+            "items": items,
+            "active_folder": None,
+            "error": e.detail,
+        })
+
+# Robust save API: accepts JSON or form, idempotent
+@app.post("/api/save")
 @app.post("/api/save")
 def api_save(request: Request, payload: SaveIn):
     uid = require_user(request)
-    db.save_item(uid, payload.guid, payload.folder_id)
+    _save_item(uid, payload.guid, payload.folder_id)
     return {"ok": True}
 
-@app.delete("/api/save/{guid}")
-def api_unsave(request: Request, guid: str):
+@app.api_route("/api/unsave", methods=["DELETE", "POST"])
+def api_unsave(request: Request, guid: str | None = Query(None), payload: dict | None = Body(None)):
     uid = require_user(request)
-    db.unsave_item(uid, guid)
+    if not guid and payload and "guid" in payload:
+        guid = str(payload["guid"])
+    if not guid:
+        raise HTTPException(400, "Missing guid")
+    _unsave_item(uid, guid)
     return {"ok": True}
+
 
 @app.get("/saved", response_class=HTMLResponse)
 def saved_page(request: Request, folder_id: int | None = None):
     uid = require_user(request)
-    folders = db.list_folders(uid)
-    items = db.list_saved_items(uid, folder_id=folder_id)
-    return render(request, "saved.html", {"folders": folders, "items": items, "active_folder": folder_id})
+    folders = _list_folders(uid)
+    items = _list_saved_items(uid, folder_id=folder_id)
+
+    active_folder_name = None
+    if folder_id is not None:
+        row = _sql_one("SELECT name FROM folders WHERE id = ? AND user_id = ?", (folder_id, uid))
+        active_folder_name = row["name"] if row else None
+
+    return render(
+        request,
+        "saved.html",
+        {
+            "folders": folders,
+            "items": items,
+            "active_folder": folder_id,
+            "active_folder_name": active_folder_name,
+        },
+    )
+
+
