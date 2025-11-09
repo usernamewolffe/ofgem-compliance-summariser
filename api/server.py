@@ -319,7 +319,9 @@ def feed_csv(limit: int = Query(5000, ge=1, le=20000)):
             r.get("tags", ""),
             r.get("guid", ""),
             r.get("source", ""),
-            (r.get("summary", "") or "").replace("\n", " "),
+            (r.get("ai_summary") or r.get("summary") or (r.get("content") or "")[:220])
+            .replace("\n", " "
+            ),
         ])
     out.seek(0)
     return StreamingResponse(
@@ -674,6 +676,16 @@ def ai_summary(req: AISummaryReq):
     text = _clean_extracted_text(title, text)
 
     summary = _generate_ai_summary(title, text, limit_words=120, guid=req.guid)
+
+    try:
+        _sql_exec(
+            "UPDATE items SET ai_summary = ?, ai_summary_updated_at = datetime('now') WHERE guid = ?",
+            (summary, item.get("guid") or item.get("link")),
+        )
+    except Exception:
+        pass
+
+    return JSONResponse({"ok": True, "summary": summary})
 
     return JSONResponse({"ok": True, "summary": summary})
 

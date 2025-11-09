@@ -155,11 +155,16 @@
               <div class="muted">
                 {{ (e.source or "")|upper }} · {{ e.published_at }}
               </div>
-              <p>
-                {% if e.summary %}{{ e.summary }}
-                {% elif e.content %}{{ e.content[:220] }}{% if e.content|length > 220 %}…{% endif %}
-                {% endif %}
-              </p>
+                <p>
+                  {% if e.ai_summary %}{{ e.ai_summary }}
+                  {% elif e.summary %}{{ e.summary }}
+                  {% elif e.content %}{{ e.content[:220] }}{% if e.content|length > 220 %}…{% endif %}
+                  {% endif %}
+                    {% if e.ai_summary %}
+  <span class="badge" title="AI generated">AI</span>
+{% endif %}
+
+                </p>
               {% if e.tags %}
                 <div class="muted">
                   Tags:
