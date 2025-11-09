@@ -88,26 +88,20 @@ jobs:
           path: public/items.json
           retention-days: 7
 
-      - name: Publish JSON to data branch
+      - name: Commit JSON to data branch
         run: |
-          git config user.name  "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          if git ls-remote --exit-code --heads origin data; then
-            git fetch origin data:data
-            git checkout data
-          else
-            git checkout --orphan data
-            git rm -rf .
-          fi
+          # Always start clean
+          git fetch origin data || true
+          git checkout -B data
+          git reset --hard
 
           mkdir -p public
-          cp /tmp/items.json public/items.json
+          cp public/items.json public/items.json
 
           git add public/items.json
-          if git diff --cached --quiet; then
-            echo "No changes to commit."
-          else
-            git commit -m "Update items.json ($(date -u +'%Y-%m-%dT%H:%M:%SZ'))"
-            git push origin data
-          fi
+          git commit -m "Update items.json ($(date -u +'%Y-%m-%dT%H:%M:%SZ'))" || echo "No changes"
+          git push origin data --force
+      
