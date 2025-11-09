@@ -1,0 +1,42 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>My saved</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;margin:1rem}
+.wrap{display:grid;grid-template-columns:260px 1fr;gap:1rem}
+aside{border:1px solid #eee;border-radius:12px;padding:1rem}
+.cards{list-style:none;padding:0;display:grid;gap:.75rem}
+.card{border:1px solid #eee;border-radius:12px;padding:1rem}
+.btn{background:#fff;border:1px solid #ccc;border-radius:6px;padding:.35rem .6rem;cursor:pointer}
+.btn.small{font-size:.85rem;padding:.25rem .5rem}
+</style></head>
+<body>
+  <div class="wrap">
+    <aside>
+      <h3>Folders</h3>
+      <ul style="list-style:none;padding:0">
+        <li><a href="/saved">All saved</a></li>
+        {% for f in folders %}
+          <li><a href="/saved?folder_id={{ f.id }}">{{ f.name }}</a></li>
+        {% endfor %}
+      </ul>
+      <form method="post" action="/account/logout"><button class="btn small">Logout</button></form>
+    </aside>
+    <main>
+      <h2>Saved items{% if active_folder %} — folder {{ active_folder }}{% endif %}</h2>
+      <ul class="cards">
+        {% for it in items %}
+          <li class="card">
+            <div><a href="{{ it.link }}" target="_blank" rel="noopener">{{ it.title }}</a></div>
+            <div class="muted">{{ it.published_at }}{% if it.folder %} · Folder: {{ it.folder }}{% endif %}</div>
+            <div style="margin-top:.5rem;">
+              <button class="btn small" onclick="fetch('/api/save/{{ it.guid }}',{method:'DELETE'}).then(()=>location.reload())">Remove</button>
+            </div>
+          </li>
+        {% else %}
+          <li class="card">No saved items yet.</li>
+        {% endfor %}
+      </ul>
+    </main>
+  </div>
+</body></html>
