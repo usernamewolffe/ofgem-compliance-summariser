@@ -5,6 +5,10 @@ on:
     - cron: "30 2 * * *"  # Every day at 02:30 UTC
   workflow_dispatch:        # Allow manual runs from GitHub web UI
 
+# No write permissions needed since we no longer push commits
+permissions:
+  contents: read
+
 jobs:
   run-precompute:
     runs-on: ubuntu-latest
@@ -41,14 +45,11 @@ jobs:
           name: precompute-logs
           path: logs/precompute.log
 
-      - name: Commit updated database (if changed)
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          if [[ -f ofgem.db ]]; then
-            git add ofgem.db
-            git diff --cached --quiet || git commit -m "Update AI summaries [auto]"
-            git push
-          fi
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # NEW: Upload the SQLite DB as an artifact instead of committing it
+      - name: Upload database artifact (if produced)
+        if: ${{ hashFiles('ofgem.db') != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ofgem-db
+          path: ofgem.db
+          if-no-files-found: ignore

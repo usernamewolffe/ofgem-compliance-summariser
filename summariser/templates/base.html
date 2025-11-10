@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>{% block title %}Compliance Summaries{% endblock %}</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="stylesheet" href="/static/tailwind.css">
+  {% block head_extra %}{% endblock %}
+</head>
+
+<body class="font-sans text-gray-800 bg-gray-50">
+  <!-- Header -->
+  <header class="sticky top-0 z-10 border-b border-gray-100 bg-white/90 backdrop-blur">
+    <div class="mx-auto max-w-6xl px-4 sm:px-6 lg:px-8 h-14 flex items-center justify-between">
+      <a href="/summaries" class="font-semibold text-gray-900 hover:text-blue-700 transition">
+        Compliance Summaries
+      </a>
+      <nav class="flex items-center gap-2 text-sm">
+        {% if uid %}
+          <a class="px-3 py-1.5 border rounded-md hover:bg-gray-50" href="/saved">My saved</a>
+          <form method="post" action="/account/logout" class="m-0">
+            <button class="px-3 py-1.5 border rounded-md hover:bg-gray-50" type="submit">Logout</button>
+          </form>
+        {% else %}
+          <a class="px-3 py-1.5 border rounded-md hover:bg-gray-50" href="/account/login">Login</a>
+          <a class="px-3 py-1.5 border rounded-md hover:bg-gray-50" href="/account/register">Register</a>
+        {% endif %}
+      </nav>
+    </div>
+  </header>
+
+  <!-- Page container -->
+  <main class="mx-auto max-w-6xl px-4 sm:px-6 lg:px-8 py-10">
+    {% block content %}
+    {% endblock %}
+  </main>
+
+  {% block scripts %}
+  {% endblock %}
+</body>
+</html>
