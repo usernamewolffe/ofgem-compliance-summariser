@@ -173,11 +173,16 @@ jobs:
           set -euo pipefail
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+      
+          # Make sure the data branch exists locally
           git fetch origin data || true
           git checkout -B data
           git reset --hard
-          mkdir -p public
-          cp public/items.json public/items.json
+      
+          # Ensure the export is present
+          test -f public/items.json
+      
+          # Commit only if there are changes
           git add public/items.json
           if git diff --cached --quiet; then
             echo "No changes to commit."
@@ -185,3 +190,4 @@ jobs:
             git commit -m "Precomputed items.json ($(date -u +'%Y-%m-%dT%H:%M:%SZ'))"
             git push origin data --force
           fi
+
