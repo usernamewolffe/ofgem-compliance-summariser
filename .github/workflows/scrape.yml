@@ -11,6 +11,8 @@ on:
       - ".github/workflows/scrape.yml"
       - "tools/export_json.py"
       - "requirements.txt"
+      - "main.py"
+      - "storage/**"
 
 permissions:
   contents: write
@@ -44,24 +46,21 @@ jobs:
           if [ -f requirements.txt ]; then
             pip install -r requirements.txt
           else
-            pip install fastapi uvicorn jinja2 python-dotenv openai "httpx<0.28" requests feedparser beautifulsoup4
+            pip install fastapi uvicorn jinja2 python-dotenv openai "httpx<0.28" requests feedparser beautifulsoup4 pypdf tenacity passlib python-multipart itsdangerous
           fi
           python -c "import sys; print('Python:', sys.version)"
           python -c "import os; print('OPENAI set:', bool(os.getenv('OPENAI_API_KEY')))"
 
       - name: Sanity check imports
         run: |
-          python -c "import importlib; \
-            [print('OK import', m) if not importlib.import_module(m) else None for m in []]"
-          python -c "import importlib, sys; \
-            mods=['storage.db','scraper.ofgem','summariser.model']; \
-            import traceback; \
-            [(__import__('builtins'), print('OK import', m)) if not (lambda: False)() else None for m in []]"
-          # simple explicit checks:
-          python -c "import importlib; import sys; \
-            [importlib.import_module(m) for m in ['storage.db','scraper.ofgem','summariser.model']]; \
-            print('All imports OK')"
-      
+          python - <<'PY'
+          import importlib
+          for m in ['storage.db','scraper.ofgem','summariser.model']:
+              importlib.import_module(m)
+              print('OK import', m)
+          print('All imports OK')
+          PY
+
       - name: Assert DB.exists present
         run: |
           python - <<'PY'
@@ -74,6 +73,14 @@ jobs:
       - name: Scrape last 1 day
         run: python main.py --since 1
 
+      - name: Upload ofgem.db artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ofgem-db
+          path: ofgem.db
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Export JSON
         run: |
           mkdir -p public
@@ -83,7 +90,6 @@ jobs:
           cp public/items.json "$RUNNER_TEMP/items.json"
           ls -lh public/items.json | cat
           head -40 public/items.json || true
-
 
       - name: Upload JSON artifact
         uses: actions/upload-artifact@v4
@@ -97,15 +103,15 @@ jobs:
           set -euo pipefail
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-      
-          # start clean on 'data'
+
+          # Prepare a clean 'data' branch
           git fetch origin data || true
           git checkout -B data
           git reset --hard
-      
+
           mkdir -p public
           cp "$RUNNER_TEMP/items.json" public/items.json
-      
+
           git add public/items.json
           if git diff --cached --quiet; then
             echo "No changes to commit."
