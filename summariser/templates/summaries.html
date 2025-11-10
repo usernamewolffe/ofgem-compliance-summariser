@@ -1,198 +1,114 @@
 {% extends "base.html" %}
-
 {% block title %}Compliance Summaries{% endblock %}
 
 {% block content %}
-<div class="mx-auto max-w-6xl px-4 sm:px-6 lg:px-8 py-4 grid gap-4 lg:grid-cols-[280px_1fr]">
+  <div class="page-title">
+    <h1>Compliance Summaries</h1>
+    <span class="pill">{{ entries|length }} shown</span>
+  </div>
 
-  <!-- Sidebar -->
-  <aside class="rounded-xl border border-gray-100 p-4 bg-white">
-    <h3 class="text-base font-semibold mb-2">Sources</h3>
+  <div class="wrap">
+    <!-- Sidebar -->
+    <aside class="panel">
+      <form class="stack" action="/summaries" method="get">
+        <input type="hidden" name="per_page" value="{{ active.per_page|default(25) }}">
+        <div class="section">
+          <h3>Search</h3>
+          <input type="text" name="q" value="{{ active.q }}" placeholder="Search title or content…">
+        </div>
 
-    <div class="flex gap-2 mb-3">
-      <button type="button" class="px-2.5 py-1 text-sm border rounded-md hover:bg-gray-50" id="selectAllSources">Select all</button>
-      <button type="button" class="px-2.5 py-1 text-sm border rounded-md hover:bg-gray-50" id="clearAllSources">Unselect all</button>
-    </div>
-
-    <form method="get" id="source-form" class="space-y-2">
-      <div class="space-y-1 max-h-[40vh] overflow-auto pr-1">
-        {% for s in all_sources %}
-          <label class="flex items-center gap-2 text-sm">
-            <input type="checkbox" name="sources" value="{{ s }}"
-                   {% if s in active.sources %}checked{% endif %}
-                   class="size-4 rounded border-gray-300 text-blue-600 focus:ring-blue-600">
-            <span class="capitalize">{{ s }}</span>
-          </label>
-        {% endfor %}
-      </div>
-
-      <input type="hidden" name="q" value="{{ active.q }}">
-      <input type="hidden" name="date_from" value="{{ active.date_from }}">
-      <input type="hidden" name="date_to" value="{{ active.date_to }}">
-      <input type="hidden" name="per_page" value="{{ active.per_page }}">
-      <input type="hidden" name="page" value="1">
-      {% for t in active.topics %}
-        <input type="hidden" name="topics" value="{{ t }}">
-      {% endfor %}
-
-      <button type="submit" class="mt-3 inline-flex items-center px-3 py-1.5 text-sm border rounded-md border-blue-600 text-blue-700 hover:bg-blue-50">Apply</button>
-    </form>
-
-    <!-- Saved Filters -->
-    <div class="mt-6 pt-4 border-t border-dashed border-gray-200">
-      <div class="flex items-center justify-between">
-        <h3 class="text-base font-semibold">Saved filters</h3>
-        <button id="refreshSaved" class="px-2.5 py-1 text-sm border rounded-md hover:bg-gray-50">Refresh</button>
-      </div>
-
-      <div class="mt-2 flex gap-2">
-        <input id="saveName" type="text" placeholder="Name this filter…" class="flex-1 rounded-md border border-gray-300 px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none">
-        <button id="saveFilter" class="px-3 py-2 text-sm border rounded-md text-blue-700 border-blue-600 hover:bg-blue-50">Save</button>
-      </div>
-
-      <div id="savedList" class="mt-3 space-y-2 text-sm">
-        <div class="text-gray-500">Loading…</div>
-      </div>
-    </div>
-  </aside>
-
-  <!-- Main -->
-  <main class="bg-white rounded-xl border border-gray-100 p-4">
-    <form class="flex flex-wrap items-center gap-2 mb-4" method="get">
-      <input type="search" name="q" placeholder="Search…" value="{{ active.q }}" class="w-64 rounded-md border border-gray-300 px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none">
-      <input type="date" name="date_from" value="{{ active.date_from }}" class="rounded-md border border-gray-300 px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none">
-      <input type="date" name="date_to" value="{{ active.date_to }}" class="rounded-md border border-gray-300 px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none">
-
-      <!-- Topics dropdown -->
-      <div id="topicDropdown" class="relative">
-        <button type="button" id="topicToggle" class="px-3 py-2 text-sm border rounded-md hover:bg-gray-50">Topics ▾</button>
-        <div class="absolute left-0 mt-1 hidden w-64 rounded-md border border-gray-200 bg-white p-3 shadow-md" role="menu" aria-label="Topics">
-          <div class="flex gap-2 mb-2">
-            <button type="button" id="selectAllTopics" class="px-2 py-1 text-xs border rounded-md hover:bg-gray-50">Select all</button>
-            <button type="button" id="clearAllTopics" class="px-2 py-1 text-xs border rounded-md hover:bg-gray-50">Unselect all</button>
+        <div class="section">
+          <h3>Date</h3>
+          <div class="row-gap">
+            <input type="date" name="date_from" value="{{ active.date_from }}">
+            <input type="date" name="date_to" value="{{ active.date_to }}">
           </div>
-          <div class="max-h-60 overflow-auto space-y-1 text-sm">
+        </div>
+
+        <div class="section">
+          <h3>Sources</h3>
+          <div class="row-gap">
+            {% for s in all_sources %}
+              <label class="chk">
+                <input type="checkbox" name="sources" value="{{ s }}" {% if s in active.sources %}checked{% endif %}>
+                <span>{{ s or 'Unknown' }}</span>
+              </label>
+            {% endfor %}
+          </div>
+        </div>
+
+        <div class="section">
+          <h3>Topics</h3>
+          <div class="row-gap">
             {% for t in all_topics %}
-              <label class="flex items-center gap-2">
-                <input type="checkbox" name="topics" value="{{ t }}"
-                       {% if (not active.topics) or (t in active.topics) %}checked{% endif %}
-                       class="size-4 rounded border-gray-300 text-blue-600 focus:ring-blue-600">
+              <label class="chk">
+                <input type="checkbox" name="topics" value="{{ t }}" {% if t in active.topics %}checked{% endif %}>
                 <span>{{ t }}</span>
               </label>
             {% endfor %}
           </div>
         </div>
-      </div>
 
-      {% for s in active.sources %}
-        <input type="hidden" name="sources" value="{{ s }}">
-      {% endfor %}
-
-      <select name="per_page" class="rounded-md border border-gray-300 px-2.5 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none">
-        {% for n in [10,25,50,100] %}
-          <option value="{{ n }}" {% if active.per_page == n %}selected{% endif %}>{{ n }} / page</option>
-        {% endfor %}
-      </select>
-
-      <input type="hidden" name="page" value="1">
-      <button type="submit" class="px-3 py-2 text-sm border rounded-md border-blue-600 text-blue-700 hover:bg-blue-50">Filter</button>
-    </form>
+        <div class="section">
+          <button class="btn primary" type="submit">Apply filters</button>
+          <a class="btn" href="/summaries">Reset</a>
+        </div>
+      </form>
+    </aside>
 
     <!-- Results -->
-    <ul class="grid gap-3">
-      {% for e in entries %}
-        <li class="rounded-xl border border-gray-100 p-4">
-          <article>
-            <h4 class="text-base font-semibold leading-5">
-              <a href="{{ e.link }}" target="_blank" rel="noopener" class="hover:underline">{{ e.title }}</a>
-              {% if 'ofgem.gov.uk' in (e.link or '') %}
-                <span class="ml-2 inline-flex items-center rounded-full border border-blue-600 px-2 py-0.5 text-[11px] font-medium text-blue-700">Ofgem Publications</span>
-              {% endif %}
-              {% if e.ai_summary %}
-                <span class="ml-1 inline-flex items-center rounded-full border border-amber-500 px-1.5 py-0.5 text-[10px] font-medium text-amber-700" title="AI generated">AI</span>
-              {% endif %}
-            </h4>
-
-            <div class="mt-1 text-xs text-gray-500">
-              {{ (e.source or "")|upper }} · {{ e.published_at }}
-            </div>
-
-            <p class="mt-2 text-sm text-gray-800">
-              {% if e.ai_summary %}{{ e.ai_summary }}
-              {% elif e.summary %}{{ e.summary }}
-              {% elif e.content %}{{ e.content[:220] }}{% if e.content|length > 220 %}…{% endif %}
-              {% endif %}
+    <section>
+      <ul class="cards">
+        {% for e in entries %}
+          <li class="card">
+            <h4><a href="{{ e.link }}" target="_blank" rel="noopener">{{ e.title }}</a></h4>
+            <div class="muted">{{ e.source }} • {{ e.published_at }}</div>
+            <p style="margin:.6rem 0 0">
+              {{ (e.ai_summary or e.summary or e.content or '')[:320] }}{% if (e.ai_summary or e.summary or e.content)|length > 320 %}…{% endif %}
             </p>
-
             {% if e.tags %}
-              <div class="mt-1 text-xs text-gray-500">
-                Tags:
-                {% if e.tags is string %}
-                  {{ e.tags.strip("[]").replace("'", "").replace('"', '') }}
-                {% else %}
-                  {{ ", ".join(e.tags) }}
-                {% endif %}
+              <div class="tags" style="margin-top:.5rem">
+                {% for tag in e.tags %}
+                  <span class="tag">{{ tag }}</span>
+                {% endfor %}
               </div>
             {% endif %}
-
-            <div class="mt-3 flex gap-2">
-              <button type="button" class="px-3 py-1.5 text-sm border rounded-md hover:bg-gray-50 save-btn" data-guid="{{ e.guid or e.link }}">Save</button>
-              <button type="button" class="px-3 py-1.5 text-sm border rounded-md hover:bg-gray-50 ai-btn" data-guid="{{ e.guid or e.link }}">AI summary (≤100 words)</button>
+            <div class="meta">
+              <a href="/api/ai-summary" style="display:none">preload</a>
             </div>
-          </article>
-        </li>
-      {% else %}
-        <li class="rounded-xl border border-gray-100 p-4 text-sm text-gray-500">No results.</li>
-      {% endfor %}
-    </ul>
-
-    {% if total_pages > 1 %}
-      <nav class="mt-4 flex flex-wrap gap-2 text-sm">
-        {% for num in page_numbers %}
-          {% if num == page %}
-            <span class="px-3 py-1.5 rounded-md border border-blue-600 text-blue-700">{{ num }}</span>
-          {% else %}
-            <a class="px-3 py-1.5 rounded-md border hover:bg-gray-50"
-               href="?page={{ num }}&per_page={{ active.per_page }}{% if active.q %}&q={{ active.q|urlencode }}{% endif %}{% if active.date_from %}&date_from={{ active.date_from }}{% endif %}{% if active.date_to %}&date_to={{ active.date_to }}{% endif %}{% for s in active.sources %}&sources={{ s|urlencode }}{% endfor %}{% for t in active.topics %}&topics={{ t|urlencode }}{% endfor %}">
-              {{ num }}
-            </a>
-          {% endif %}
+          </li>
         {% endfor %}
-      </nav>
-    {% endif %}
-  </main>
-</div>
+      </ul>
 
-<!-- Modals -->
-<div id="aiModal" class="fixed inset-0 z-50 hidden items-center justify-center bg-black/40">
-  <div class="w-[90%] max-w-lg rounded-xl bg-white p-4 shadow-xl">
-    <h3 class="text-base font-semibold mb-2">AI summary</h3>
-    <div id="aiModalBody" class="text-sm text-gray-600">Preparing summary…</div>
-    <div class="mt-4 flex justify-end">
-      <button type="button" class="px-3 py-1.5 text-sm border rounded-md hover:bg-gray-50" id="aiModalClose">Close</button>
-    </div>
+      <!-- Pagination -->
+      {% if total_pages > 1 %}
+        <nav class="pagination">
+          {% if page > 1 %}
+            <a href="?{{ urlencode({'q':active.q,'date_from':active.date_from,'date_to':active.date_to}, doseq=True) }}&{% for s in active.sources %}sources={{ s }}&{% endfor %}{% for t in active.topics %}topics={{ t }}&{% endfor %}page={{ page-1 }}&per_page={{ active.per_page }}">‹ Prev</a>
+          {% endif %}
+          {% for n in page_numbers %}
+            {% if n == page %}
+              <span class="active">{{ n }}</span>
+            {% else %}
+              <a href="?{{ urlencode({'q':active.q,'date_from':active.date_from,'date_to':active.date_to}, doseq=True) }}&{% for s in active.sources %}sources={{ s }}&{% endfor %}{% for t in active.topics %}topics={{ t }}&{% endfor %}page={{ n }}&per_page={{ active.per_page }}">{{ n }}</a>
+            {% endif %}
+          {% endfor %}
+          {% if page < total_pages %}
+            <a href="?{{ urlencode({'q':active.q,'date_from':active.date_from,'date_to':active.date_to}, doseq=True) }}&{% for s in active.sources %}sources={{ s }}&{% endfor %}{% for t in active.topics %}topics={{ t }}&{% endfor %}page={{ page+1 }}&per_page={{ active.per_page }}">Next ›</a>
+          {% endif %}
+        </nav>
+      {% endif %}
+    </section>
   </div>
-</div>
-
-<div id="saveModal" class="fixed inset-0 z-50 hidden items-center justify-center bg-black/40">
-  <div class="w-[90%] max-w-lg rounded-xl bg-white p-4 shadow-xl">
-    <h3 class="text-base font-semibold">Save to folder</h3>
-    <p class="text-sm text-gray-600 mb-2">Choose a folder or create one.</p>
-    <select id="folderSelect" class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm"></select>
-    <div class="mt-2 flex gap-2">
-      <input id="newFolderName" placeholder="New folder name" class="flex-1 rounded-md border border-gray-300 px-3 py-2 text-sm">
-      <button class="px-3 py-2 text-sm border rounded-md hover:bg-gray-50" id="createFolderBtn" type="button">Create</button>
-    </div>
-    <div class="mt-4 flex justify-end gap-2">
-      <button type="button" class="px-3 py-1.5 text-sm border rounded-md hover:bg-gray-50" id="saveCancel">Cancel</button>
-      <button type="button" class="px-3 py-1.5 text-sm border rounded-md border-blue-600 text-blue-700 hover:bg-blue-50" id="saveConfirm">Save</button>
-    </div>
-  </div>
-</div>
 {% endblock %}
+
 
 {% block scripts %}
 <script>
+    const res = await fetch('/items.json');       // convenience route
+// or
+// const res = await fetch('/public/items.json');
+
   // Sources select/unselect
   function setAllSources(c){document.querySelectorAll('#source-form input[name="sources"]').forEach(b=>b.checked=c);}
   document.getElementById('selectAllSources')?.addEventListener('click',()=>setAllSources(true));

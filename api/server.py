@@ -46,10 +46,29 @@ db = DB("ofgem.db")
 
 # Static (optional legacy assets)
 app.mount("/static", StaticFiles(directory="api/static", html=True), name="static")
+# Serve precomputed JSON (public/items.json) without shadowing app routes
+PUBLIC_DIR = BASE_DIR / "public"
+if PUBLIC_DIR.exists():
+    # e.g. /public/items.json
+    app.mount("/public", StaticFiles(directory=str(PUBLIC_DIR), html=False), name="public")
+
+from fastapi.responses import FileResponse
+
+@app.get("/items.json")
+def items_json():
+    """Convenience route so the page can fetch /items.json directly."""
+    path = PUBLIC_DIR / "items.json"
+    if not path.exists():
+        return JSONResponse({"error": "items.json not found. Run tools/export_json.py first."}, status_code=404)
+    return FileResponse(path, media_type="application/json")
 
 # Templates: summariser/templates/summariser
-TEMPLATES_DIR = BASE_DIR / "summariser" / "templates" / "summariser"
+TEMPLATES_DIR = BASE_DIR / "summariser" / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+# Add urlencode helper for templates (used in pagination)
+from urllib.parse import urlencode as _urlencode
+templates.env.globals["urlencode"] = _urlencode
+
 
 # Password hashing context — new hashes use PBKDF2-SHA256 (no 72-byte limit).
 # We still accept old bcrypt / bcrypt_sha256 hashes on login.
