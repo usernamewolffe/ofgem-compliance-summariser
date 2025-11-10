@@ -17,6 +17,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: scrape-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   run:
     runs-on: ubuntu-latest
@@ -74,11 +78,11 @@ jobs:
         run: python main.py --since 1
 
       - name: Upload ofgem.db artifact
+        if: ${{ hashFiles('ofgem.db') != '' }}
         uses: actions/upload-artifact@v4
         with:
           name: ofgem-db
           path: ofgem.db
-          if-no-files-found: error
           retention-days: 7
 
       - name: Export JSON
