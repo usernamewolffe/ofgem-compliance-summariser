@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}New Control{% endblock %}
+{% block content %}
+  <h1>New Control</h1>
+  <form action="/orgs/{{ org_id }}/controls/new" method="post" style="display:grid;gap:.5rem;max-width:560px;">
+    <label>Title <input name="title" required /></label>
+    <label>Code <input name="code" /></label>
+    <label>Description <textarea name="description" rows="4"></textarea></label>
+    <label>Owner email <input type="email" name="owner_email" /></label>
+    <label>Tags (CSV or ["json","array"]) <input name="tags" /></label>
+    <label>Status
+      <select name="status">
+        <option>Active</option>
+        <option>Paused</option>
+        <option>Retired</option>
+      </select>
+    </label>
+    <label>Risk <input name="risk" /></label>
+    <label>Review frequency (days) <input type="number" name="review_frequency_days" /></label>
+    <label>Next review at (YYYY-MM-DD) <input name="next_review_at" /></label>
+    {% if site_id %}
+      <input type="hidden" name="site_id" value="{{ site_id }}">
+    {% endif %}
+    <button class="btn primary" type="submit">Create control</button>
+  </form>
+{% endblock %}

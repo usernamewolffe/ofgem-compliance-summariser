@@ -13,26 +13,35 @@
   </div>
 </div>
 
+<!-- Two-column layout: sidebar (sites) + main (controls) -->
 <div class="wrap">
-  <section class="panel" style="padding:1.25rem; background:#f9fbf9; border-radius:12px; overflow-x:auto;">
-
+  <!-- SIDEBAR -->
+  <aside class="panel" style="padding:1rem;">
+    <h3 style="margin:0 0 .5rem;">Sites</h3>
     {% if sites and sites|length %}
-      <div class="muted" style="margin-bottom:.5rem; font-size:.9rem;">
-        Sites:
+      <nav class="stack">
+        <a href="/orgs/{{ org_id }}/controls" class="tag" style="display:inline-block;">Org-wide</a>
         {% for s in sites %}
-          <a href="/orgs/{{ org_id }}/controls?site={{ s.id }}" class="tag" style="margin-right:.35rem;">{{ s.name }}</a>
+          <a href="/orgs/{{ org_id }}/controls?site={{ s.id }}" class="tag" style="display:inline-block;">
+            {{ s.name }}
+          </a>
         {% endfor %}
-        <a href="/orgs/{{ org_id }}/controls" class="tag">Org-wide</a>
-      </div>
+      </nav>
+    {% else %}
+      <p class="muted" style="margin:0;">No sites yet.</p>
     {% endif %}
+  </aside>
 
+  <!-- MAIN CONTENT -->
+  <section class="panel" style="padding:1.25rem; background:#f9fbf9; border-radius:12px;">
     {% if grouped and grouped|length %}
       {% for site_name, rows in grouped.items() %}
         <h3 style="margin:1rem 0 .5rem; font-size:1rem; font-weight:600;">{{ site_name }}</h3>
 
-        <ul class="cards" style="list-style:none; padding:0; margin:0; display:grid; gap:.75rem;">
+        <!-- Responsive grid of control cards -->
+        <ul class="cards controls-grid">
           {% for c in rows %}
-            <li class="card" style="background:#fff; border:1px solid #d6e4d6; border-radius:12px; padding:1rem;">
+            <li class="card">
               <div style="display:flex; justify-content:space-between; align-items:baseline; flex-wrap:wrap; gap:.5rem;">
                 <div>
                   <strong style="font-size:.95rem;">{{ c.code or '—' }}</strong>
@@ -109,7 +118,6 @@
     <h3 style="margin:.25rem 0 1rem;">Add control</h3>
 
     <div class="stack">
-      <!-- Site selection (Step 4 dropdown lives here) -->
       <label>Site
         <select name="site_id">
           <option value="">(Org-wide)</option>

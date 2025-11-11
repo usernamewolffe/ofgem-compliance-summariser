@@ -100,7 +100,7 @@
     <section>
       <ul class="cards">
         {% for e in entries %}
-          <li class="card">
+          <li class="card" data-guid="{{ e.guid }}">
             <h4><a href="{{ e.link }}" target="_blank" rel="noopener">{{ e.title }}</a></h4>
             <div class="muted">{{ e.source }} • {{ e.published_at }}</div>
             <p style="margin:.6rem 0 0">
@@ -124,23 +124,30 @@
               </div>
             {% endif %}
 
-            <!-- ✅ Send to colleague form -->
-            <form action="/send" method="post" style="margin-top:.75rem; display:flex; gap:.5rem; align-items:center;">
-              <input type="hidden" name="guid" value="{{ e.guid }}">
-              <input
-                type="email"
-                name="email"
-                placeholder="colleague@example.com"
-                required
-                style="flex:1; padding:.25rem .5rem; border:1px solid #ddd; border-radius:6px;"
-              >
-              <button
-                type="submit"
-                style="padding:.25rem .75rem; border:none; background:#004b50; color:white; border-radius:6px; cursor:pointer;"
-              >
-                Send
-              </button>
-            </form>
+            <!-- Actions row -->
+            <div style="display:flex; gap:.5rem; flex-wrap:wrap; align-items:center; margin-top:.75rem;">
+              <!-- Save to folder -->
+              <button class="btn small" data-open-save>Save to folder</button>
+
+              <!-- Tag for organisation -->
+              <button class="btn small" data-open-tag>Tag to site/control</button>
+
+              <!-- Send to colleague -->
+              <form action="/send" method="post" style="display:flex; gap:.5rem; align-items:center; margin-left:auto;">
+                <input type="hidden" name="guid" value="{{ e.guid }}">
+                <input
+                  type="email"
+                  name="email"
+                  placeholder="colleague@example.com"
+                  required
+                  style="flex:1; padding:.25rem .5rem; border:1px solid #ddd; border-radius:6px; min-width:220px;"
+                >
+                <button type="submit" class="btn small primary">Send</button>
+              </form>
+            </div>
+
+            <!-- Inline status messages -->
+            <div class="muted" data-status style="margin-top:.5rem; display:none;"></div>
           </li>
         {% endfor %}
       </ul>
@@ -165,12 +172,64 @@
       {% endif %}
     </section>
   </div>
+
+  <!-- Save dialog -->
+  <dialog id="dlgSave" style="border:none; border-radius:12px; padding:0; max-width:560px; width:96%;">
+    <form method="dialog" style="padding:1rem; background:#fff; border:1px solid var(--line); border-radius:12px;">
+      <h3 style="margin:.25rem 0 1rem;">Save to folder</h3>
+      <input type="hidden" name="guid">
+      <div class="stack">
+        <label>Folder
+          <select name="folder_id" id="saveFolderSelect">
+            <option value="">— Choose folder —</option>
+          </select>
+        </label>
+        <div style="display:flex; gap:.5rem; align-items:center;">
+          <input type="text" id="newFolderName" placeholder="New folder name…" style="flex:1; padding:.55rem .6rem; border:1px solid var(--line); border-radius:8px;">
+          <button class="btn" id="btnCreateFolder" type="button">Create</button>
+        </div>
+        <label>Note (optional)
+          <input type="text" name="note" placeholder="Why is this useful?">
+        </label>
+      </div>
+      <div style="display:flex; gap:.5rem; justify-content:flex-end; margin-top:1rem;">
+        <button type="button" class="btn" data-cancel>Cancel</button>
+        <button type="submit" class="btn primary" data-submit>Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Tag dialog -->
+  <dialog id="dlgTag" style="border:none; border-radius:12px; padding:0; max-width:680px; width:96%;">
+    <form method="dialog" style="padding:1rem; background:#fff; border:1px solid var(--line); border-radius:12px;">
+      <h3 style="margin:.25rem 0 1rem;">Tag to site / control</h3>
+      <input type="hidden" name="guid">
+      <div class="stack">
+        <div style="display:grid; grid-template-columns: 1fr 1fr; gap:.5rem;">
+          <label>Site (optional)
+            <select name="site_id" id="tagSiteSelect">
+              <option value="">Org-wide</option>
+            </select>
+          </label>
+          <label>Control (optional)
+            <select name="org_control_id" id="tagControlSelect">
+              <option value="">— Choose control —</option>
+            </select>
+          </label>
+        </div>
+      </div>
+      <div style="display:flex; gap:.5rem; justify-content:flex-end; margin-top:1rem;">
+        <button type="button" class="btn" data-cancel>Cancel</button>
+        <button type="submit" class="btn primary" data-submit>Tag</button>
+      </div>
+    </form>
+  </dialog>
 {% endblock %}
 
 {% block scripts %}
 <script>
 (function() {
-  // Delete a saved filter
+  // ---------- Delete saved filter ----------
   document.querySelectorAll('[data-delete-id]')?.forEach(btn => {
     btn.addEventListener('click', async (e) => {
       e.preventDefault();
@@ -183,7 +242,7 @@
     });
   });
 
-  // Save current filters as a named saved filter
+  // ---------- Save current filters ----------
   const saveBtn = document.getElementById('saveFilter');
   if (saveBtn) {
     saveBtn.addEventListener('click', async (e) => {
@@ -215,6 +274,190 @@
       window.location.reload();
     });
   }
+
+  // ---------- Helpers ----------
+  const orgId = {{ org_id or 1 }};
+  const dlgSave = document.getElementById('dlgSave');
+  const dlgTag  = document.getElementById('dlgTag');
+
+  async function loadFolders() {
+    const r = await fetch('/api/folders', { credentials: 'same-origin' });
+    if (!r.ok) return [];
+    return r.json();
+  }
+
+  async function createFolder(name) {
+    const r = await fetch('/api/folders', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ name }),
+      credentials: 'same-origin'
+    });
+    if (!r.ok) throw new Error('Failed to create folder');
+    return r.json();
+  }
+
+  async function saveItem(guid, folder_id, note) {
+    return fetch('/api/items/save', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ guid, folder_id, note }),
+      credentials: 'same-origin'
+    });
+  }
+
+  async function loadSites() {
+    const r = await fetch(`/api/orgs/${orgId}/sites`, { credentials: 'same-origin' });
+    if (!r.ok) return [];
+    return r.json();
+  }
+
+  async function loadOrgControls() {
+    const r = await fetch(`/api/orgs/${orgId}/org-controls`, { credentials: 'same-origin' });
+    if (!r.ok) return [];
+    return r.json();
+  }
+
+  async function tagItem(guid, site_id, org_control_id) {
+    return fetch('/api/items/tag', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ guid, org_id: orgId, site_id, org_control_id }),
+      credentials: 'same-origin'
+    });
+  }
+
+  function showStatus(cardEl, msg, ok=true) {
+    const el = cardEl.querySelector('[data-status]');
+    if (!el) return;
+    el.textContent = msg;
+    el.style.display = 'block';
+    el.style.color = ok ? 'var(--muted)' : '#b00020';
+  }
+
+  // ---------- Save dialog ----------
+  document.querySelectorAll('[data-open-save]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const card = btn.closest('[data-guid]');
+      const guid = card?.getAttribute('data-guid');
+      if (!guid) return;
+
+      dlgSave.querySelector('input[name="guid"]').value = guid;
+
+      const select = document.getElementById('saveFolderSelect');
+      select.innerHTML = '<option value="">— Choose folder —</option>';
+      try {
+        const folders = await loadFolders();
+        folders.forEach(f => {
+          const opt = document.createElement('option');
+          opt.value = f.id;
+          opt.textContent = f.name;
+          select.appendChild(opt);
+        });
+      } catch(e) { console.error(e); }
+
+      dlgSave.showModal();
+    });
+  });
+
+  document.getElementById('btnCreateFolder')?.addEventListener('click', async (e) => {
+    e.preventDefault();
+    const name = (document.getElementById('newFolderName')?.value || '').trim();
+    if (!name) { alert('Folder name required'); return; }
+    try {
+      const folder = await createFolder(name);
+      const select = document.getElementById('saveFolderSelect');
+      const opt = document.createElement('option');
+      opt.value = folder.id;
+      opt.textContent = folder.name;
+      select.appendChild(opt);
+      select.value = folder.id;
+      document.getElementById('newFolderName').value = '';
+    } catch(err) {
+      alert('Failed to create folder');
+    }
+  });
+
+  dlgSave?.querySelector('[data-submit]')?.addEventListener('click', async (e) => {
+    e.preventDefault();
+    const guid = dlgSave.querySelector('input[name="guid"]').value;
+    const folder_id = dlgSave.querySelector('select[name="folder_id"]').value || null;
+    const note = dlgSave.querySelector('input[name="note"]').value || null;
+
+    const card = document.querySelector(`[data-guid="${CSS.escape(guid)}"]`);
+    try {
+      const r = await saveItem(guid, folder_id ? Number(folder_id) : null, note);
+      if (r.ok) {
+        showStatus(card, 'Saved to folder ✔');
+        dlgSave.close();
+      } else {
+        const t = await r.text();
+        showStatus(card, 'Save failed: ' + t, false);
+      }
+    } catch (err) {
+      showStatus(card, 'Save failed', false);
+    }
+  });
+  dlgSave?.querySelector('[data-cancel]')?.addEventListener('click', () => dlgSave.close());
+
+  // ---------- Tag dialog ----------
+  document.querySelectorAll('[data-open-tag]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const card = btn.closest('[data-guid]');
+      const guid = card?.getAttribute('data-guid');
+      if (!guid) return;
+
+      dlgTag.querySelector('input[name="guid"]').value = guid;
+
+      const siteSel = document.getElementById('tagSiteSelect');
+      const ctrlSel = document.getElementById('tagControlSelect');
+      siteSel.innerHTML = '<option value="">Org-wide</option>';
+      ctrlSel.innerHTML = '<option value="">— Choose control —</option>';
+
+      try {
+        const [sites, ctrls] = await Promise.all([loadSites(), loadOrgControls()]);
+        sites.forEach(s => {
+          const opt = document.createElement('option');
+          opt.value = s.id;
+          opt.textContent = s.name;
+          siteSel.appendChild(opt);
+        });
+        ctrls.forEach(c => {
+          const opt = document.createElement('option');
+          opt.value = c.id;
+          opt.textContent = (c.code ? c.code + ' — ' : '') + c.title + (c.site_name ? ` (${c.site_name})` : '');
+          ctrlSel.appendChild(opt);
+        });
+      } catch (e) { console.error(e); }
+
+      dlgTag.showModal();
+    });
+  });
+
+  dlgTag?.querySelector('[data-submit]')?.addEventListener('click', async (e) => {
+    e.preventDefault();
+    const guid = dlgTag.querySelector('input[name="guid"]').value;
+    const site_id = dlgTag.querySelector('select[name="site_id"]').value || null;
+    const org_control_id = dlgTag.querySelector('select[name="org_control_id"]').value || null;
+    const card = document.querySelector(`[data-guid="${CSS.escape(guid)}"]`);
+    try {
+      const r = await tagItem(
+        guid,
+        site_id ? Number(site_id) : null,
+        org_control_id ? Number(org_control_id) : null
+      );
+      if (r.ok) {
+        showStatus(card, 'Tagged ✔');
+        dlgTag.close();
+      } else {
+        const t = await r.text();
+        showStatus(card, 'Tag failed: ' + t, false);
+      }
+    } catch(err) {
+      showStatus(card, 'Tag failed', false);
+    }
+  });
+  dlgTag?.querySelector('[data-cancel]')?.addEventListener('click', () => dlgTag.close());
 })();
 </script>
 {% endblock %}

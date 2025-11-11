@@ -30,6 +30,15 @@ from pydantic import BaseModel
 from tools.email_utils import send_article_email
 from storage.db import DB
 from fastapi import Form
+
+from fastapi import Body  # if not already imported
+
+def current_user_email(request: Request) -> str:
+    # Adjust to your session shape if needed
+    return (getattr(request, "session", {}).get("user")
+            or os.getenv("DEV_USER")
+            or "andrewpeat@example.com")
+
 # ---------------------------------------------------------------------------
 # App setup
 # ---------------------------------------------------------------------------
@@ -109,6 +118,18 @@ app.add_middleware(
 # ---------------------------------------------------------------------------
 # Continue with your routes, login handlers, etc.
 # ---------------------------------------------------------------------------
+def current_user(request: Request) -> str:
+    """
+    Temporary user resolver.
+    - Uses session if you already have SessionMiddleware.
+    - Falls back to DEV_USER env var, else a fixed name.
+    """
+    return (
+        getattr(request, "session", {}).get("user")  # if SessionMiddleware is on
+        or os.getenv("DEV_USER")
+        or "andrewpeat"
+    )
+
 
 # ---------------------------------------------------------------------------
 # Continue with your routes and other setup below...
@@ -172,6 +193,13 @@ pwd_ctx = CryptContext(
     default="pbkdf2_sha256",
     deprecated="auto",
 )
+
+def current_user_email(request: Request) -> str:
+    # adjust to your session shape if needed
+    return (getattr(request, "session", {}).get("user")
+            or os.getenv("DEV_USER")
+            or "andrewpeat@example.com")
+
 
 # ---------------------------------------------------------------------------
 # SQLite fallback layer (used only if DB wrapper lacks needed methods)
@@ -337,48 +365,52 @@ def _list_saved_items(user_id: int, folder_id: int | None = None) -> List[dict]:
 # ---------------------------------------------------------------------------
 # Auth tables + helpers
 # ---------------------------------------------------------------------------
-def _ensure_users_tables() -> None:
-    _sql_exec("""
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            email TEXT UNIQUE NOT NULL,
-            password_hash TEXT NOT NULL,
-            created_at TEXT NOT NULL DEFAULT (datetime('now'))
-        )
-    """)
+def _ensure_users_tables():
+    # FOLDERS (user-private)
     _sql_exec("""
         CREATE TABLE IF NOT EXISTS folders (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            name TEXT NOT NULL,
-            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+          id          INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_email  TEXT NOT NULL,
+          name        TEXT NOT NULL,
+          created_at  TEXT NOT NULL
         )
     """)
+    _sql_exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_folders_user_name ON folders(user_email, name)")
+
+    # SAVED ITEMS (bookmarks per user)
     _sql_exec("""
         CREATE TABLE IF NOT EXISTS saved_items (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            guid TEXT NOT NULL,
-            folder_id INTEGER,
-            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+          user_email  TEXT NOT NULL,
+          item_guid   TEXT NOT NULL,
+          folder_id   INTEGER,
+          note        TEXT,
+          created_at  TEXT NOT NULL,
+          PRIMARY KEY (user_email, item_guid),
+          FOREIGN KEY (folder_id) REFERENCES folders(id) ON DELETE SET NULL
         )
     """)
-    _sql_exec("""
-        CREATE TABLE IF NOT EXISTS saved_filters (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            params_json TEXT NOT NULL,
-            cadence TEXT
-        )
-    """)
-    _sql_exec("CREATE UNIQUE INDEX IF NOT EXISTS uq_folders_user_name ON folders(user_id, name COLLATE NOCASE)")
-    _sql_exec("CREATE UNIQUE INDEX IF NOT EXISTS uq_saved_items_user_guid ON saved_items(user_id, guid)")
+    _sql_exec("CREATE INDEX IF NOT EXISTS idx_saved_items_folder ON saved_items(folder_id)")
 
-    # Add ai_summary column if it doesn’t exist
-    try:
-        _sql_exec("ALTER TABLE items ADD COLUMN ai_summary TEXT")
-    except Exception:
-        pass
+    # USER TAGS (private associations items → sites/controls)
+    _sql_exec("""
+        CREATE TABLE IF NOT EXISTS user_item_tags (
+          id              INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_email      TEXT NOT NULL,
+          item_guid       TEXT NOT NULL,
+          org_id          INTEGER NOT NULL,
+          site_id         INTEGER,
+          org_control_id  INTEGER,
+          created_at      TEXT NOT NULL,
+          FOREIGN KEY (site_id)        REFERENCES sites(id)         ON DELETE CASCADE,
+          FOREIGN KEY (org_control_id) REFERENCES org_controls(id)  ON DELETE CASCADE
+        )
+    """)
+    _sql_exec("CREATE INDEX IF NOT EXISTS idx_u_tags_user_item ON user_item_tags(user_email, item_guid)")
+    _sql_exec("""
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_u_tags_uniqueness
+        ON user_item_tags(user_email, item_guid, IFNULL(site_id,-1), IFNULL(org_control_id,-1))
+    """)
+
 
 
 def _get_user_by_email(email: str) -> Optional[dict]:
@@ -399,6 +431,13 @@ def _startup():
         except Exception:
             pass
     _ensure_users_tables()
+
+def current_org_id(request: Request) -> int | None:
+    try:
+        return int(request.session.get("org_id"))
+    except Exception:
+        return None
+
 
 # ---------------------------------------------------------------------------
 # Render helper
@@ -492,6 +531,12 @@ def summaries_page(
     page: int = 1,
     per_page: int = 25,
 ):
+    # --- org context (variable, not hardcoded) ------------------------------
+    org_id = resolve_org_id(request)          # <-- uses query → session → env → DB(singleton)
+    db = DB(os.getenv("DB_PATH", "ofgem.db"))
+    org_name = get_org_name(db, org_id)
+
+    # -----------------------------------------------------------------------
     all_items = db.list_items(limit=20000)
 
     # helper: date range check
@@ -540,7 +585,7 @@ def summaries_page(
     total = len(filtered)
     start = (page - 1) * per_page
     end = start + per_page
-    page_items = filtered[start:end]              # <-- ensures defined
+    page_items = filtered[start:end]
     total_pages = (total + per_page - 1) // per_page if total else 1
     page_numbers = list(range(max(1, page - 2), min(total_pages, page + 2) + 1))
 
@@ -572,9 +617,255 @@ def summaries_page(
             "all_sources": all_sources,
             "all_topics": TOPIC_TAGS,
             "saved_filters": saved_filters,
+            "uid": uid,                # used by header for Sign in/out and by UI logic
+            "org_id": org_id,          # used by feed JS to call /api/orgs/{org_id}/...
+            "org_name": org_name,      # optional: show active org in header
         },
     )
-# --- Organisations ----------------------------------------------------------
+
+# --- Users ----------------------------------------------------------
+
+from fastapi import Body
+
+def current_user_email(request: Request) -> str:
+    return (getattr(request, "session", {}).get("user")
+            or os.getenv("DEV_USER")
+            or "andrewpeat@example.com")
+
+def resolve_org_id(request: Request) -> int:
+    """
+    Priority:
+    1) ?org_id=... (URL override for deep links)
+    2) request.session["org_id"] (sticky selection)
+    3) env ORG_ID / DEFAULT_ORG_ID
+    4) if DB has exactly one org → that ID
+    else raise 400 with a helpful message.
+    """
+    # 1) URL override
+    q = request.query_params.get("org_id")
+    if q:
+        try:
+            oid = int(q)
+            request.session["org_id"] = oid
+            return oid
+        except ValueError:
+            pass
+
+    # 2) session
+    try:
+        if "org_id" in request.session:
+            return int(request.session["org_id"])
+    except Exception:
+        pass
+
+    # 3) env
+    for key in ("ORG_ID", "DEFAULT_ORG_ID"):
+        v = os.getenv(key)
+        if v and v.isdigit():
+            oid = int(v)
+            request.session["org_id"] = oid
+            return oid
+
+    # 4) only org in DB?
+    db = DB(os.getenv("DB_PATH", "ofgem.db"))
+    orgs = db.list_orgs()
+    if len(orgs) == 1:
+        oid = int(orgs[0]["id"])
+        request.session["org_id"] = oid
+        return oid
+
+    # No selection possible
+    raise HTTPException(
+        status_code=400,
+        detail="No organisation selected. Visit /orgs/select to pick one."
+    )
+
+def get_org_name(db: "DB", org_id: int) -> str:
+    with db._conn() as conn:
+        cur = conn.execute("SELECT name FROM orgs WHERE id=?", (int(org_id),))
+        row = cur.fetchone()
+        return row["name"] if row else f"Org {org_id}"
+
+@app.get("/orgs/switch")
+def switch_org(request: Request, org_id: int = Query(...), next: str = Query("/summaries")):
+    request.session["org_id"] = int(org_id)
+    return RedirectResponse(url=next, status_code=303)
+
+@app.get("/orgs/select")
+def select_org_page(request: Request):
+    db = DB(os.getenv("DB_PATH", "ofgem.db"))
+    orgs = db.list_orgs()
+    # super-simple chooser page (no separate template required)
+    html = ["<h1>Select organisation</h1><ul>"]
+    for o in orgs:
+        html.append(
+            f'<li><a href="/orgs/switch?org_id={o["id"]}&next=/summaries">{o["name"]}</a></li>'
+        )
+    html.append("</ul>")
+    return HTMLResponse("".join(html))
+
+# --- folders ---
+# ---------- FOLDERS ----------
+@app.get("/api/folders")
+def api_list_folders(request: Request):
+    user = current_user_email(request)
+    db = DB(os.getenv("DB_PATH", "ofgem.db"))
+    with db._conn() as conn:
+        cur = conn.execute(
+            "SELECT id, name, created_at FROM folders WHERE user_email=? ORDER BY name COLLATE NOCASE",
+            (user,),
+        )
+        return JSONResponse([dict(r) for r in cur.fetchall()])
+
+@app.post("/api/folders")
+async def api_create_folder(request: Request):
+    user = current_user_email(request)
+    data = await request.json()
+    name = (data.get("name") or "").strip()
+    if not name:
+        return JSONResponse({"detail": "Folder name required"}, status_code=400)
+
+    db = DB(os.getenv("DB_PATH", "ofgem.db"))
+    now = datetime.now(timezone.utc).isoformat()
+    with db._conn() as conn:
+        try:
+            conn.execute(
+                "INSERT INTO folders (user_email, name, created_at) VALUES (?,?,?)",
+                (user, name, now),
+            )
+            conn.commit()
+        except sqlite3.IntegrityError:
+            # unique on (user_email, name)
+            pass
+        cur = conn.execute(
+            "SELECT id, name, created_at FROM folders WHERE user_email=? AND name=?",
+            (user, name),
+        )
+        row = cur.fetchone()
+    return JSONResponse(dict(row))
+
+# ---------- SAVE / UNSAVE ITEMS ----------
+@app.post("/api/items/save")
+async def api_save_item(request: Request):
+    user = current_user_email(request)
+    data = await request.json()
+    guid = (data.get("guid") or "").strip()
+    folder_id = data.get("folder_id")
+    if not guid:
+        return JSONResponse({"detail": "guid required"}, status_code=400)
+    try:
+        folder_id = int(folder_id) if folder_id not in (None, "", "null") else None
+    except (TypeError, ValueError):
+        folder_id = None
+
+    db = DB(os.getenv("DB_PATH", "ofgem.db"))
+    now = datetime.now(timezone.utc).isoformat()
+    with db._conn() as conn:
+        if folder_id is not None:
+            cur = conn.execute("SELECT 1 FROM folders WHERE id=? AND user_email=?", (folder_id, user))
+            if cur.fetchone() is None:
+                return JSONResponse({"detail": "Folder not found"}, status_code=404)
+        # upsert-like semantics
+        conn.execute(
+            """
+            INSERT INTO saved_items (user_id, guid, folder_id, created_at)
+            VALUES (
+                (SELECT rowid FROM users WHERE email=?), ?, ?, ?
+            )
+            ON CONFLICT(user_id, guid) DO UPDATE SET folder_id=excluded.folder_id
+            """,
+            (user, guid, folder_id, now),
+        )
+        conn.commit()
+    return JSONResponse({"ok": True})
+
+@app.delete("/api/items/save")
+async def api_unsave_item(request: Request):
+    user = current_user_email(request)
+    data = await request.json()
+    guid = (data.get("guid") or "").strip()
+    if not guid:
+        return JSONResponse({"detail": "guid required"}, status_code=400)
+    db = DB(os.getenv("DB_PATH", "ofgem.db"))
+    with db._conn() as conn:
+        conn.execute(
+            """
+            DELETE FROM saved_items
+            WHERE user_id=(SELECT rowid FROM users WHERE email=?) AND guid=?
+            """,
+            (user, guid),
+        )
+        conn.commit()
+    return JSONResponse({"ok": True})
+
+# --- tag / untag ---
+@app.post("/feed/tag")
+def api_tag_item(
+    request: Request,
+    item_guid: str = Form(...),
+    org_id: int = Form(...),
+    site_id: int | None = Form(None),
+    org_control_id: int | None = Form(None),
+):
+    if not site_id and not org_control_id:
+        return JSONResponse({"detail": "Provide site_id or org_control_id"}, status_code=400)
+    db = DB(os.getenv("DB_PATH", "ofgem.db"))
+    user = current_user_email(request)
+    if site_id:
+        db.tag_item_site(user, item_guid, org_id, site_id)
+    if org_control_id:
+        db.tag_item_control(user, item_guid, org_id, org_control_id)
+    return {"ok": True}
+
+@app.delete("/api/items/tag")
+async def api_untag_item(request: Request):
+    user = current_user_email(request)
+    data = await request.json()
+    guid = (data.get("guid") or "").strip()
+    org_id = data.get("org_id")
+    site_id = data.get("site_id")
+    org_control_id = data.get("org_control_id")
+
+    if not guid:
+        return JSONResponse({"detail": "guid required"}, status_code=400)
+
+    if org_id in (None, "", "null"):
+        org_id = resolve_org_id(request)
+    try:
+        org_id = int(org_id)
+    except (TypeError, ValueError):
+        return JSONResponse({"detail": "org_id must be an integer"}, status_code=400)
+
+    def _to_int_or_none(v):
+        if v in (None, "", "null"):
+            return None
+        try: return int(v)
+        except (TypeError, ValueError): return None
+
+    site_id = _to_int_or_none(site_id)
+    org_control_id = _to_int_or_none(org_control_id)
+
+    db = DB(os.getenv("DB_PATH", "ofgem.db"))
+    with db._conn() as conn:
+        conn.execute(
+            """
+            DELETE FROM user_item_tags
+            WHERE user_email=? AND item_guid=? AND org_id=?
+              AND IFNULL(site_id,-1)=IFNULL(?, -1)
+              AND IFNULL(org_control_id,-1)=IFNULL(?, -1)
+            """,
+            (user, guid, org_id, site_id, org_control_id),
+        )
+        conn.commit()
+    return JSONResponse({"ok": True})
+
+# Provide options for the picker (sites + org controls)
+@app.get("/orgs/{org_id}/tag-options")
+def api_tag_options(request: Request, org_id: int):
+    db = DB(os.getenv("DB_PATH", "ofgem.db"))
+    sites = db.list_sites(org_id)
+    ctrls = db.list_all_controls_for_org(org_id)
+    return {"sites": sites, "controls": ctrls}
 
 
 # --- Sites Index ------------------------------------------------------------
@@ -594,6 +885,15 @@ def list_sites_page(request: Request, org_id: int):
             "sites": sites,
         },
     )
+from fastapi import Form
+
+@app.post("/orgs/create")
+def create_org(request: Request, name: str = Form(...)):
+    # Temporary stand-in for logged-in user
+    current_user = "andrewpeat"
+
+    db.create_org(name, user=current_user)
+    return RedirectResponse(url="/orgs", status_code=303)
 
 # --- Add a new site ---------------------------------------------------------
 @app.post("/orgs/{org_id}/sites/new")
@@ -607,8 +907,12 @@ def create_site(
     db = DB(os.getenv("DB_PATH", "ofgem.db"))
     if not name.strip():
         return JSONResponse({"detail": "Name required"}, status_code=400)
-    db.upsert_site(org_id, name, code, location)
+
+    user = current_user(request)
+    db.upsert_site(org_id, name, code, location, created_by=user)
+
     return RedirectResponse(url=f"/orgs/{org_id}/sites", status_code=303)
+
 
 @app.get("/orgs/{org_id}")
 def org_root_redirect(org_id: int):
@@ -646,6 +950,69 @@ def org_controls_page(request: Request, org_id: int, site: Optional[int] = None)
             "current_site": current_site,
         },
     )
+from fastapi import Request, Form
+from fastapi.responses import RedirectResponse, JSONResponse
+import os
+from storage.db import DB
+
+# simple placeholder until auth is wired
+def current_user(request: Request) -> str:
+    return (getattr(request, "session", {}).get("user")
+            or os.getenv("DEV_USER")
+            or "andrewpeat")
+
+@app.get("/orgs/{org_id}/controls/new")
+def org_control_new_page(request: Request, org_id: int, site_id: int | None = None):
+    return templates.TemplateResponse(
+        "org_control_new.html",
+        {"request": request, "org_id": org_id, "site_id": site_id}
+    )
+
+@app.post("/orgs/{org_id}/controls/new")
+def org_control_create(
+    request: Request,
+    org_id: int,
+    title: str = Form(...),
+    code: str = Form(""),
+    description: str = Form(""),
+    owner_email: str = Form(""),
+    tags: str = Form(""),
+    status: str = Form("Active"),
+    risk: str = Form(""),
+    review_frequency_days: str | None = Form(None),
+    next_review_at: str | None = Form(None),
+    site_id: int | None = Form(None),
+):
+    db = DB(os.getenv("DB_PATH", "ofgem.db"))
+    if not title.strip():
+        return JSONResponse({"detail": "Title required"}, status_code=400)
+
+    # ✅ Safely handle empty or invalid input for review_frequency_days
+    rfd = None
+    if review_frequency_days:
+        try:
+            rfd = int(review_frequency_days)
+        except ValueError:
+            rfd = None
+
+    user = current_user(request)
+    db.upsert_org_control(
+        org_id=org_id,
+        site_id=site_id,
+        code=code,
+        title=title,
+        description=description,
+        owner_email=owner_email,
+        tags=tags,  # can be CSV or JSON array; db.py normalises it
+        status=status,
+        risk=risk,
+        review_frequency_days=rfd,  # 👈 use the safely parsed int
+        next_review_at=next_review_at,
+        created_by=user,
+    )
+
+    return RedirectResponse(url=f"/orgs/{org_id}/controls", status_code=303)
+
 
 @app.post("/orgs/{org_id}/sites/new")
 def create_site(
@@ -1192,3 +1559,138 @@ def saved_page(request: Request, folder_id: int | None = None):
             "active_folder_name": active_folder_name,
         },
     )
+# Explicit by ID (already in your code)
+@app.get("/api/orgs/{org_id}/sites")
+def api_org_sites(org_id: int):
+    db = DB(os.getenv("DB_PATH", "ofgem.db"))
+    with db._conn() as conn:
+        cur = conn.execute("SELECT id, name FROM sites WHERE org_id=? ORDER BY name", (int(org_id),))
+        return JSONResponse([{"id": r["id"], "name": r["name"]} for r in cur.fetchall()])
+
+@app.get("/api/orgs/{org_id}/org-controls")
+def api_org_controls(org_id: int):
+    db = DB(os.getenv("DB_PATH", "ofgem.db"))
+    with db._conn() as conn:
+        cur = conn.execute(
+            """SELECT oc.id, oc.title, oc.code, oc.site_id, s.name AS site_name
+               FROM org_controls oc
+               LEFT JOIN sites s ON s.id = oc.site_id
+               WHERE oc.org_id=?
+               ORDER BY COALESCE(s.name,''), COALESCE(oc.code,''), oc.title""",
+            (int(org_id),),
+        )
+        rows = [{
+            "id": r["id"], "title": r["title"], "code": r["code"],
+            "site_id": r["site_id"], "site_name": r["site_name"]
+        } for r in cur.fetchall()]
+        return JSONResponse(rows)
+
+# Session-aware "current" variants (no org_id in path)
+@app.get("/api/orgs/current/sites")
+def api_current_org_sites(request: Request):
+    oid = resolve_org_id(request)
+    return api_org_sites(oid)
+
+@app.get("/api/orgs/current/org-controls")
+def api_current_org_controls(request: Request):
+    oid = resolve_org_id(request)
+    return api_org_controls(oid)
+
+@app.post("/api/items/tag")
+async def api_tag_item(request: Request):
+    user = current_user_email(request)
+    data = await request.json()
+
+    guid = (data.get("guid") or "").strip()
+    if not guid:
+        return JSONResponse({"detail": "guid required"}, status_code=400)
+
+    # org_id: allow omission → resolve from session/query/env/DB
+    org_id = data.get("org_id")
+    if org_id in (None, "", "null"):
+        try:
+            org_id = resolve_org_id(request)
+        except HTTPException as hx:
+            # bubble up a clear error if no org can be resolved
+            return JSONResponse({"detail": hx.detail}, status_code=hx.status_code)
+    try:
+        org_id = int(org_id)
+    except (TypeError, ValueError):
+        return JSONResponse({"detail": "org_id must be an integer"}, status_code=400)
+
+    # Normalise optionals (empty string / null → None; else int)
+    def _to_int_or_none(v):
+        if v in (None, "", "null"):
+            return None
+        try:
+            return int(v)
+        except (TypeError, ValueError):
+            return None
+
+    site_id = _to_int_or_none(data.get("site_id"))
+    org_control_id = _to_int_or_none(data.get("org_control_id"))
+
+    db = DB(os.getenv("DB_PATH", "ofgem.db"))
+    now = datetime.now(timezone.utc).isoformat()
+
+    with db._conn() as conn:
+        # --- Guard rails: site/control must belong to this org ----------------
+        if site_id is not None:
+            cur = conn.execute("SELECT 1 FROM sites WHERE id=? AND org_id=?", (site_id, org_id))
+            if cur.fetchone() is None:
+                return JSONResponse({"detail": "site_id does not belong to this org"}, status_code=400)
+
+        if org_control_id is not None:
+            cur = conn.execute("SELECT 1 FROM org_controls WHERE id=? AND org_id=?", (org_control_id, org_id))
+            if cur.fetchone() is None:
+                return JSONResponse({"detail": "org_control_id does not belong to this org"}, status_code=400)
+
+        # --- Upsert unique tag (user_email, item_guid, org_id, site_id?, control?) ---
+        cur = conn.execute(
+            """
+            SELECT 1 FROM user_item_tags
+            WHERE user_email=? AND item_guid=? AND org_id=?
+              AND IFNULL(site_id,-1) = IFNULL(?, -1)
+              AND IFNULL(org_control_id,-1) = IFNULL(?, -1)
+            """,
+            (user, guid, org_id, site_id, org_control_id),
+        )
+        exists = cur.fetchone() is not None
+        if not exists:
+            conn.execute(
+                """
+                INSERT INTO user_item_tags (user_email, item_guid, org_id, site_id, org_control_id, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (user, guid, org_id, site_id, org_control_id, now),
+            )
+            conn.commit()
+
+        # --- Return current tags for this user+item to simplify UI refresh ----
+        cur = conn.execute(
+            """
+            SELECT t.id, t.org_id, t.site_id, t.org_control_id,
+                   s.name AS site_name,
+                   oc.title AS control_title, oc.code AS control_code
+            FROM user_item_tags t
+            LEFT JOIN sites s ON s.id = t.site_id
+            LEFT JOIN org_controls oc ON oc.id = t.org_control_id
+            WHERE t.user_email=? AND t.item_guid=? AND t.org_id=?
+            ORDER BY COALESCE(s.name,''), COALESCE(oc.code,''), COALESCE(oc.title,'')
+            """,
+            (user, guid, org_id),
+        )
+        tags = []
+        for r in cur.fetchall():
+            tags.append({
+                "id": r["id"],
+                "org_id": r["org_id"],
+                "site_id": r["site_id"],
+                "site_name": r["site_name"],
+                "org_control_id": r["org_control_id"],
+                "control_code": r["control_code"],
+                "control_title": r["control_title"],
+            })
+
+    return JSONResponse({"ok": True, "tags": tags})
+

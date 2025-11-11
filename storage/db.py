@@ -28,6 +28,10 @@ class DB:
         return conn
 
     # --- schema -------------------------------------------------------------
+    def _has_column(self, cur: sqlite3.Cursor, table: str, col: str) -> bool:
+        cols = {r[1] for r in cur.execute(f"PRAGMA table_info({table})").fetchall()}
+        return col in cols
+
     def _init_schema(self) -> None:
         """Create or upgrade tables and indexes (idempotent)."""
         with self._conn() as conn, closing(conn.cursor()) as cur:
@@ -121,10 +125,18 @@ class DB:
                 CREATE TABLE IF NOT EXISTS orgs (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     name TEXT NOT NULL UNIQUE,
-                    created_at TEXT NOT NULL
+                    created_at TEXT NOT NULL,
+                    created_by TEXT
                 )
                 """
             )
+            # backfill for older DBs
+            if not self._has_column(cur, "orgs", "created_at"):
+                cur.execute("ALTER TABLE orgs ADD COLUMN created_at TEXT")
+                cur.execute("UPDATE orgs SET created_at = datetime('now') WHERE created_at IS NULL")
+            if not self._has_column(cur, "orgs", "created_by"):
+                cur.execute("ALTER TABLE orgs ADD COLUMN created_by TEXT")
+
             cur.execute(
                 """
                 CREATE TABLE IF NOT EXISTS sites (
@@ -134,11 +146,17 @@ class DB:
                     code TEXT,
                     location TEXT,
                     created_at TEXT NOT NULL,
+                    created_by TEXT,
                     UNIQUE(org_id, name),
                     FOREIGN KEY(org_id) REFERENCES orgs(id) ON DELETE CASCADE
                 )
                 """
             )
+            if not self._has_column(cur, "sites", "created_at"):
+                cur.execute("ALTER TABLE sites ADD COLUMN created_at TEXT")
+                cur.execute("UPDATE sites SET created_at = datetime('now') WHERE created_at IS NULL")
+            if not self._has_column(cur, "sites", "created_by"):
+                cur.execute("ALTER TABLE sites ADD COLUMN created_by TEXT")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_sites_org ON sites(org_id)")
 
             # ------------------- org controls (with optional site) -------------------
@@ -159,6 +177,7 @@ class DB:
                     next_review_at TEXT,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
+                    created_by TEXT,
                     UNIQUE(org_id, site_id, code),
                     FOREIGN KEY(org_id) REFERENCES orgs(id) ON DELETE CASCADE,
                     FOREIGN KEY(site_id) REFERENCES sites(id) ON DELETE SET NULL
@@ -168,22 +187,38 @@ class DB:
             oc_cols = {r[1] for r in cur.execute("PRAGMA table_info(org_controls)").fetchall()}
             if "site_id" not in oc_cols:
                 cur.execute("ALTER TABLE org_controls ADD COLUMN site_id INTEGER")
+            if "created_at" not in oc_cols:
+                cur.execute("ALTER TABLE org_controls ADD COLUMN created_at TEXT")
+                cur.execute("UPDATE org_controls SET created_at = datetime('now') WHERE created_at IS NULL")
+            if "updated_at" not in oc_cols:
+                cur.execute("ALTER TABLE org_controls ADD COLUMN updated_at TEXT")
+                cur.execute("UPDATE org_controls SET updated_at = created_at WHERE updated_at IS NULL")
+            if "created_by" not in oc_cols:
+                cur.execute("ALTER TABLE org_controls ADD COLUMN created_by TEXT")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_org_controls_org ON org_controls(org_id)")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_org_controls_title ON org_controls(title)")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_org_controls_site ON org_controls(site_id)")
 
-            # mapping: org controls ↔ framework controls
+            # mapping: org controls ↔ framework controls (+ provenance)
             cur.execute(
                 """
                 CREATE TABLE IF NOT EXISTS org_control_map (
                     org_control_id INTEGER NOT NULL,
                     control_id INTEGER NOT NULL,
+                    created_at TEXT,
+                    created_by TEXT,
                     PRIMARY KEY (org_control_id, control_id),
                     FOREIGN KEY (org_control_id) REFERENCES org_controls(id) ON DELETE CASCADE,
                     FOREIGN KEY (control_id) REFERENCES controls(id) ON DELETE CASCADE
                 )
                 """
             )
+            ocm_cols = {r[1] for r in cur.execute("PRAGMA table_info(org_control_map)").fetchall()}
+            if "created_at" not in ocm_cols:
+                cur.execute("ALTER TABLE org_control_map ADD COLUMN created_at TEXT")
+                cur.execute("UPDATE org_control_map SET created_at = datetime('now') WHERE created_at IS NULL")
+            if "created_by" not in ocm_cols:
+                cur.execute("ALTER TABLE org_control_map ADD COLUMN created_by TEXT")
 
             # projection: items -> org controls via framework links
             cur.execute("DROP VIEW IF EXISTS v_item_org_control_links")
@@ -377,6 +412,158 @@ class DB:
             cur.execute("DELETE FROM saved_filters WHERE id = ?", (int(filter_id),))
             conn.commit()
 
+    # --------- folders ----------
+    def list_folders(self, user_email: str) -> list[dict]:
+        with self._conn() as conn, closing(conn.cursor()) as cur:
+            cur.execute(
+                "SELECT id, name, created_at FROM folders WHERE user_email=? ORDER BY name",
+                (user_email,),
+            )
+            return [dict(r) for r in cur.fetchall()]
+
+    def create_folder(self, user_email: str, name: str) -> int:
+        with self._conn() as conn, closing(conn.cursor()) as cur:
+            now = datetime.now(timezone.utc).isoformat()
+            try:
+                cur.execute(
+                    "INSERT INTO folders (user_email, name, created_at) VALUES (?,?,?)",
+                    (user_email, name.strip(), now),
+                )
+                conn.commit()
+                return int(cur.lastrowid)
+            except sqlite3.IntegrityError:
+                cur.execute(
+                    "SELECT id FROM folders WHERE user_email=? AND name=?",
+                    (user_email, name.strip()),
+                )
+                row = cur.fetchone()
+                return int(row[0]) if row else 0
+
+    # --------- saved items ----------
+    def save_item_for_user(self, user_email: str, item_guid: str, folder_id: int | None = None,
+                           note: str | None = None):
+        with self._conn() as conn, closing(conn.cursor()) as cur:
+            now = datetime.now(timezone.utc).isoformat()
+            cur.execute(
+                """
+                INSERT INTO saved_items (user_email, item_guid, folder_id, note, created_at)
+                VALUES (?, ?, ?, ?, ?) ON CONFLICT(user_email, item_guid) DO
+                UPDATE SET
+                    folder_id = excluded.folder_id,
+                    note = COALESCE (excluded.note, saved_items.note)
+                """,
+                (user_email, item_guid, folder_id, note, now),
+            )
+            conn.commit()
+
+    def unsave_item_for_user(self, user_email: str, item_guid: str):
+        with self._conn() as conn, closing(conn.cursor()) as cur:
+            cur.execute("DELETE FROM saved_items WHERE user_email=? AND item_guid=?", (user_email, item_guid))
+            conn.commit()
+
+    def list_saved_items(self, user_email: str, folder_id: int | None = None, limit: int = 200) -> list[dict]:
+        with self._conn() as conn, closing(conn.cursor()) as cur:
+            if folder_id:
+                cur.execute(
+                    """
+                    SELECT i.guid, i.title, i.link, i.source, i.published_at, s.created_at AS saved_at, s.note
+                    FROM saved_items s
+                             JOIN items i ON i.guid = s.item_guid
+                    WHERE s.user_email = ?
+                      AND s.folder_id = ?
+                    ORDER BY datetime(COALESCE(i.published_at, '1970-01-01')) DESC LIMIT ?
+                    """,
+                    (user_email, int(folder_id), int(limit)),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT i.guid, i.title, i.link, i.source, i.published_at, s.created_at AS saved_at, s.note
+                    FROM saved_items s
+                             JOIN items i ON i.guid = s.item_guid
+                    WHERE s.user_email = ?
+                    ORDER BY datetime(COALESCE(i.published_at, '1970-01-01')) DESC LIMIT ?
+                    """,
+                    (user_email, int(limit)),
+                )
+            return [dict(r) for r in cur.fetchall()]
+
+    # --------- user tags (site / control) ----------
+    def tag_item_site(self, user_email: str, item_guid: str, org_id: int, site_id: int):
+        with self._conn() as conn, closing(conn.cursor()) as cur:
+            now = datetime.now(timezone.utc).isoformat()
+            cur.execute(
+                """
+                INSERT
+                OR IGNORE INTO user_item_tags (user_email, item_guid, org_id, site_id, org_control_id, created_at)
+                VALUES (?,?,?,?,NULL,?)
+                """,
+                (user_email, item_guid, int(org_id), int(site_id), now),
+            )
+            conn.commit()
+
+    def tag_item_control(self, user_email: str, item_guid: str, org_id: int, org_control_id: int):
+        with self._conn() as conn, closing(conn.cursor()) as cur:
+            now = datetime.now(timezone.utc).isoformat()
+            cur.execute(
+                """
+                INSERT
+                OR IGNORE INTO user_item_tags (user_email, item_guid, org_id, site_id, org_control_id, created_at)
+                VALUES (?,?,?,NULL,?,?)
+                """,
+                (user_email, item_guid, int(org_id), int(org_control_id), now),
+            )
+            conn.commit()
+
+    def untag_item_site(self, user_email: str, item_guid: str, site_id: int):
+        with self._conn() as conn, closing(conn.cursor()) as cur:
+            cur.execute(
+                "DELETE FROM user_item_tags WHERE user_email=? AND item_guid=? AND site_id=?",
+                (user_email, item_guid, int(site_id)),
+            )
+            conn.commit()
+
+    def untag_item_control(self, user_email: str, item_guid: str, org_control_id: int):
+        with self._conn() as conn, closing(conn.cursor()) as cur:
+            cur.execute(
+                "DELETE FROM user_item_tags WHERE user_email=? AND item_guid=? AND org_control_id=?",
+                (user_email, item_guid, int(org_control_id)),
+            )
+            conn.commit()
+
+    def list_item_user_tags(self, user_email: str, item_guid: str) -> dict:
+        with self._conn() as conn, closing(conn.cursor()) as cur:
+            out = {"sites": [], "controls": []}
+            # sites
+            cur.execute(
+                """
+                SELECT t.site_id, s.name
+                FROM user_item_tags t
+                         JOIN sites s ON s.id = t.site_id
+                WHERE t.user_email = ?
+                  AND t.item_guid = ?
+                  AND t.site_id IS NOT NULL
+                ORDER BY s.name
+                """,
+                (user_email, item_guid),
+            )
+            out["sites"] = [dict(r) for r in cur.fetchall()]
+            # controls
+            cur.execute(
+                """
+                SELECT t.org_control_id AS id, oc.title, oc.code
+                FROM user_item_tags t
+                         JOIN org_controls oc ON oc.id = t.org_control_id
+                WHERE t.user_email = ?
+                  AND t.item_guid = ?
+                  AND t.org_control_id IS NOT NULL
+                ORDER BY oc.title
+                """,
+                (user_email, item_guid),
+            )
+            out["controls"] = [dict(r) for r in cur.fetchall()]
+            return out
+
     # --- controls (framework) ----------------------------------------------
     def upsert_control(
         self,
@@ -511,10 +698,13 @@ class DB:
             return [dict(r) for r in cur.fetchall()]
 
     # --- organisations / sites ---------------------------------------------
-    def upsert_org(self, name: str) -> int:
+    def upsert_org(self, name: str, created_by: Optional[str] = None) -> int:
         now = datetime.now(timezone.utc).isoformat()
         with self._conn() as conn, closing(conn.cursor()) as cur:
-            cur.execute("INSERT OR IGNORE INTO orgs (name, created_at) VALUES (?,?)", (name.strip(), now))
+            cur.execute(
+                "INSERT OR IGNORE INTO orgs (name, created_at, created_by) VALUES (?,?,?)",
+                (name.strip(), now, created_by),
+            )
             if cur.lastrowid:
                 conn.commit()
                 return int(cur.lastrowid)
@@ -524,15 +714,29 @@ class DB:
 
     def list_orgs(self) -> List[Dict[str, Any]]:
         with self._conn() as conn, closing(conn.cursor()) as cur:
-            cur.execute("SELECT id, name, created_at FROM orgs ORDER BY name")
+            cur.execute("SELECT id, name, created_at, created_by FROM orgs ORDER BY name")
             return [dict(r) for r in cur.fetchall()]
 
-    def upsert_site(self, org_id: int, name: str, code: str | None = None, location: str | None = None) -> int:
+    def upsert_site(
+        self,
+        org_id: int,
+        name: str,
+        code: str | None = None,
+        location: str | None = None,
+        created_by: Optional[str] = None,
+    ) -> int:
         now = datetime.now(timezone.utc).isoformat()
-        payload = (int(org_id), name.strip(), (code or "").strip() or None, (location or "").strip() or None, now)
+        payload = (
+            int(org_id),
+            name.strip(),
+            (code or "").strip() or None,
+            (location or "").strip() or None,
+            now,
+            created_by,
+        )
         with self._conn() as conn, closing(conn.cursor()) as cur:
             cur.execute(
-                "INSERT OR IGNORE INTO sites (org_id, name, code, location, created_at) VALUES (?,?,?,?,?)",
+                "INSERT OR IGNORE INTO sites (org_id, name, code, location, created_at, created_by) VALUES (?,?,?,?,?,?)",
                 payload,
             )
             if cur.lastrowid:
@@ -545,8 +749,22 @@ class DB:
     def list_sites(self, org_id: int) -> List[Dict[str, Any]]:
         with self._conn() as conn, closing(conn.cursor()) as cur:
             cur.execute(
-                "SELECT id, org_id, name, code, location, created_at FROM sites WHERE org_id=? ORDER BY name",
+                "SELECT id, org_id, name, code, location, created_at, created_by FROM sites WHERE org_id=? ORDER BY name",
                 (int(org_id),),
+            )
+            return [dict(r) for r in cur.fetchall()]
+
+    # Creator-scoped variants (do not break existing callers)
+    def list_sites_for_user(self, org_id: int, user: str) -> List[Dict[str, Any]]:
+        with self._conn() as conn, closing(conn.cursor()) as cur:
+            cur.execute(
+                """
+                SELECT id, org_id, name, code, location, created_at, created_by
+                FROM sites
+                WHERE org_id = ? AND (created_by = ? OR created_by IS NULL)
+                ORDER BY name
+                """,
+                (int(org_id), user),
             )
             return [dict(r) for r in cur.fetchall()]
 
@@ -564,6 +782,7 @@ class DB:
         review_frequency_days: int | None = None,
         next_review_at: str | None = None,
         site_id: int | None = None,
+        created_by: Optional[str] = None,
     ) -> int:
         now = datetime.now(timezone.utc).isoformat()
         payload = {
@@ -580,16 +799,17 @@ class DB:
             "next_review_at": next_review_at,
             "created_at": now,
             "updated_at": now,
+            "created_by": created_by,
         }
         with self._conn() as conn, closing(conn.cursor()) as cur:
             cur.execute(
                 """
                 INSERT INTO org_controls
                   (org_id, site_id, code, title, description, owner_email, tags, status, risk,
-                   review_frequency_days, next_review_at, created_at, updated_at)
+                   review_frequency_days, next_review_at, created_at, updated_at, created_by)
                 VALUES
                   (:org_id, :site_id, :code, :title, :description, :owner_email, :tags, :status, :risk,
-                   :review_frequency_days, :next_review_at, :created_at, :updated_at)
+                   :review_frequency_days, :next_review_at, :created_at, :updated_at, :created_by)
                 """,
                 payload,
             )
@@ -616,6 +836,36 @@ class DB:
             out.append(d)
         return out
 
+    def list_org_controls_for_user(self, org_id: int, user: str, site_id: int | None = None) -> List[Dict[str, Any]]:
+        with self._conn() as conn, closing(conn.cursor()) as cur:
+            if site_id is None:
+                cur.execute(
+                    """
+                    SELECT * FROM org_controls
+                    WHERE org_id=? AND site_id IS NULL
+                      AND (created_by = ? OR created_by IS NULL)
+                    ORDER BY title
+                    """,
+                    (int(org_id), user),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT * FROM org_controls
+                    WHERE org_id=? AND site_id=?
+                      AND (created_by = ? OR created_by IS NULL)
+                    ORDER BY title
+                    """,
+                    (int(org_id), int(site_id), user),
+                )
+            rows = cur.fetchall()
+        out: List[Dict[str, Any]] = []
+        for r in rows:
+            d = dict(r)
+            d["tags"] = self._load_tags(d.get("tags"))
+            out.append(d)
+        return out
+
     def list_all_controls_for_org(self, org_id: int) -> List[Dict[str, Any]]:
         """Org-level + per-site in one list, joined with site name."""
         with self._conn() as conn, closing(conn.cursor()) as cur:
@@ -623,7 +873,7 @@ class DB:
                 """
                 SELECT oc.id, oc.org_id, oc.site_id, oc.code, oc.title, oc.description,
                        oc.status, oc.risk, oc.owner_email, oc.tags, oc.review_frequency_days,
-                       oc.next_review_at, oc.created_at, oc.updated_at,
+                       oc.next_review_at, oc.created_at, oc.updated_at, oc.created_by,
                        s.name AS site_name
                 FROM org_controls oc
                 LEFT JOIN sites s ON s.id = oc.site_id
@@ -640,12 +890,13 @@ class DB:
             out.append(d)
         return out
 
-    def map_org_control_to_controls(self, org_control_id: int, control_ids: List[int]) -> None:
+    def map_org_control_to_controls(self, org_control_id: int, control_ids: List[int], created_by: Optional[str] = None) -> None:
+        now = datetime.now(timezone.utc).isoformat()
         with self._conn() as conn, closing(conn.cursor()) as cur:
             cur.execute("DELETE FROM org_control_map WHERE org_control_id=?", (int(org_control_id),))
             cur.executemany(
-                "INSERT OR IGNORE INTO org_control_map (org_control_id, control_id) VALUES (?,?)",
-                [(int(org_control_id), int(cid)) for cid in control_ids],
+                "INSERT OR IGNORE INTO org_control_map (org_control_id, control_id, created_at, created_by) VALUES (?,?,?,?)",
+                [(int(org_control_id), int(cid), now, created_by) for cid in control_ids],
             )
             conn.commit()
 
