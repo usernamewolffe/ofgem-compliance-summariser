@@ -1,17 +1,7 @@
-# Python
+.venv/
 __pycache__/
 *.pyc
-*.pyo
-*.pyd
-*.egg-info/
-.venv/
-.env
-# OS
-.DS_Store
-# App data
 ofgem.db
-# IDE
-.vscode/
-.idea/
-# Uvicorn reload cache
-.pytest_cache/
+.env
+.DS_Store
+

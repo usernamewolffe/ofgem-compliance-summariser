@@ -162,6 +162,10 @@ jobs:
         run: |
           PYTHONPATH=. python tools/precompute_summaries.py
 
+      - name: Link controls
+        run: PYTHONPATH=. python tools/link_controls.py
+
+
       - name: Export updated JSON
         run: |
           mkdir -p public

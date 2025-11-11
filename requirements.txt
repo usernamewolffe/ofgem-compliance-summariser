@@ -12,5 +12,6 @@ pypdf>=5.0.0
 passlib[bcrypt]>=1.7
 python-multipart>=0.0.9
 itsdangerous>=2.2
+sendgrid>=6.10
 
 

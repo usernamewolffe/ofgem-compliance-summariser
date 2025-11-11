@@ -10,8 +10,9 @@
   <div class="wrap">
     <!-- Sidebar -->
     <aside class="panel">
-      <form class="stack" action="/summaries" method="get">
+      <form class="stack" action="/summaries" method="get" id="filterForm">
         <input type="hidden" name="per_page" value="{{ active.per_page|default(25) }}">
+
         <div class="section">
           <h3>Search</h3>
           <input type="text" name="q" value="{{ active.q }}" placeholder="Search title or content…">
@@ -49,10 +50,49 @@
           </div>
         </div>
 
-        <div class="section">
+        <div class="section" style="display:flex; gap:.5rem; flex-wrap:wrap;">
           <button class="btn primary" type="submit">Apply filters</button>
           <a class="btn" href="/summaries">Reset</a>
         </div>
+
+        {% if uid %}
+          <!-- Saved Filters -->
+          <div class="section" style="margin-top:1rem;">
+            <h3>Saved filters</h3>
+            {% if saved_filters and saved_filters|length %}
+              <ul class="stack" style="list-style:none; padding:0; margin:0;">
+                {% for f in saved_filters %}
+                  <li class="panel" style="padding:.5rem; display:flex; align-items:center; justify-content:space-between; gap:.5rem;">
+                    <div>
+                      <strong>{{ f.name }}</strong>
+                      {% if f.cadence %}
+                        <span class="muted" style="font-size:.8rem; margin-left:.35rem;">{{ f.cadence }}</span>
+                      {% endif %}
+                    </div>
+                    <div style="display:flex; gap:.4rem;">
+                      <a class="btn small" href="/apply-saved-filter?filter_id={{ f.id }}">Apply</a>
+                      <button class="btn small" data-delete-id="{{ f.id }}" aria-label="Delete saved filter">Delete</button>
+                    </div>
+                  </li>
+                {% endfor %}
+              </ul>
+            {% else %}
+              <p class="muted" style="margin:.5rem 0 0;">No saved filters yet.</p>
+            {% endif %}
+          </div>
+
+          <!-- Save current as new filter -->
+          <div class="section">
+            <h3>Save current filter</h3>
+            <div class="row-gap">
+              <input type="text" id="saveName" placeholder="Name this filter…">
+              <button class="btn" id="saveFilter">Save</button>
+            </div>
+            <p class="muted" style="font-size:.85rem; margin-top:.4rem;">
+              Saves the current query, dates, selected sources & topics.
+            </p>
+          </div>
+        {% endif %}
       </form>
     </aside>
 
@@ -64,18 +104,43 @@
             <h4><a href="{{ e.link }}" target="_blank" rel="noopener">{{ e.title }}</a></h4>
             <div class="muted">{{ e.source }} • {{ e.published_at }}</div>
             <p style="margin:.6rem 0 0">
-              {{ (e.ai_summary or e.summary or e.content or '')[:320] }}{% if (e.ai_summary or e.summary or e.content)|length > 320 %}…{% endif %}
+              {{ (e.ai_summary or e.summary or e.content or '')[:320] }}
+              {% if (e.ai_summary or e.summary or e.content)|length > 320 %}…{% endif %}
             </p>
+
+            {% if e.controls %}
+              <div class="controls" style="margin-top:.5rem; display:flex; flex-wrap:wrap; gap:.4rem;">
+                {% for c in e.controls %}
+                  <span class="tag" style="background:#004b50; color:white;">{{ c }}</span>
+                {% endfor %}
+              </div>
+            {% endif %}
+
             {% if e.tags %}
-              <div class="tags" style="margin-top:.5rem">
+              <div class="tags" style="margin-top:.25rem;">
                 {% for tag in e.tags %}
                   <span class="tag">{{ tag }}</span>
                 {% endfor %}
               </div>
             {% endif %}
-            <div class="meta">
-              <a href="/api/ai-summary" style="display:none">preload</a>
-            </div>
+
+            <!-- ✅ Send to colleague form -->
+            <form action="/send" method="post" style="margin-top:.75rem; display:flex; gap:.5rem; align-items:center;">
+              <input type="hidden" name="guid" value="{{ e.guid }}">
+              <input
+                type="email"
+                name="email"
+                placeholder="colleague@example.com"
+                required
+                style="flex:1; padding:.25rem .5rem; border:1px solid #ddd; border-radius:6px;"
+              >
+              <button
+                type="submit"
+                style="padding:.25rem .75rem; border:none; background:#004b50; color:white; border-radius:6px; cursor:pointer;"
+              >
+                Send
+              </button>
+            </form>
           </li>
         {% endfor %}
       </ul>
@@ -102,83 +167,54 @@
   </div>
 {% endblock %}
 
-
 {% block scripts %}
 <script>
-    const res = await fetch('/items.json');       // convenience route
-// or
-// const res = await fetch('/public/items.json');
-
-  // Sources select/unselect
-  function setAllSources(c){document.querySelectorAll('#source-form input[name="sources"]').forEach(b=>b.checked=c);}
-  document.getElementById('selectAllSources')?.addEventListener('click',()=>setAllSources(true));
-  document.getElementById('clearAllSources')?.addEventListener('click',()=>setAllSources(false));
-
-  // Topics dropdown
-  const dropdown=document.querySelector('#topicDropdown > div[role="menu"]');
-  document.getElementById('topicToggle')?.addEventListener('click',()=>dropdown.classList.toggle('hidden'));
-  document.addEventListener('click',e=>{const root=document.getElementById('topicDropdown'); if(root && !root.contains(e.target)) dropdown.classList.add('hidden');});
-  function setAllTopics(c){document.querySelectorAll('#topicDropdown input[name="topics"]').forEach(b=>b.checked=c);}
-  document.getElementById('selectAllTopics')?.addEventListener('click',()=>setAllTopics(true));
-  document.getElementById('clearAllTopics')?.addEventListener('click',()=>setAllTopics(false));
-
-  // AI modal
-  const aiModal=document.getElementById('aiModal'); const aiModalBody=document.getElementById('aiModalBody');
-  document.getElementById('aiModalClose')?.addEventListener('click',()=>aiModal.classList.add('hidden'));
-  document.querySelectorAll('.ai-btn').forEach(btn=>{
-    btn.addEventListener('click',async()=>{
-      aiModal.classList.remove('hidden'); aiModalBody.textContent='Summarising…';
-      const guid=btn.dataset.guid;
-      try{
-        const r=await fetch('/api/ai-summary',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({guid})});
-        const d=await r.json(); aiModalBody.textContent=d.summary||'No summary.';
-      }catch{ aiModalBody.textContent='Failed to summarise.'; }
+(function() {
+  // Delete a saved filter
+  document.querySelectorAll('[data-delete-id]')?.forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      e.preventDefault();
+      const id = btn.getAttribute('data-delete-id');
+      if (!id) return;
+      if (!confirm('Delete this saved filter?')) return;
+      const res = await fetch(`/api/saved-filters/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      if (res.ok) window.location.reload();
+      else alert('Failed to delete filter.');
     });
   });
 
-  // Folder save modal
-  let pendingGuid=null; const saveModal=document.getElementById('saveModal'); const folderSelect=document.getElementById('folderSelect');
-  async function loadFolders(){folderSelect.innerHTML='<option value="">(No folder)</option>'; const r=await fetch('/api/folders',{credentials:'same-origin'}); const d=await r.json(); (d.folders||[]).forEach(f=>{const o=document.createElement('option');o.value=f.id;o.textContent=f.name;folderSelect.appendChild(o);});}
-  async function createFolder(){const n=document.getElementById('newFolderName').value.trim(); if(!n) return alert('Enter a folder name'); const r=await fetch('/api/folders',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify({name:n})}); if(!r.ok){alert('Failed to create folder');return;} document.getElementById('newFolderName').value=''; loadFolders();}
-  async function saveItem(){const id=folderSelect.value||null; const r=await fetch('/api/save',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify({guid:pendingGuid,folder_id:id?Number(id):null})}); if(r.status===409){alert('Already saved in this folder');return;} if(!r.ok){alert('Failed to save');return;} alert('Saved successfully'); saveModal.classList.add('hidden');}
-  document.getElementById('createFolderBtn')?.addEventListener('click',createFolder);
-  document.getElementById('saveConfirm')?.addEventListener('click',saveItem);
-  document.getElementById('saveCancel')?.addEventListener('click',()=>saveModal.classList.add('hidden'));
-  document.querySelectorAll('.save-btn').forEach(b=>b.addEventListener('click',()=>{pendingGuid=b.dataset.guid; saveModal.classList.remove('hidden'); loadFolders();}));
+  // Save current filters as a named saved filter
+  const saveBtn = document.getElementById('saveFilter');
+  if (saveBtn) {
+    saveBtn.addEventListener('click', async (e) => {
+      e.preventDefault();
+      const nameInput = document.getElementById('saveName');
+      const name = (nameInput?.value || '').trim();
+      if (!name) { alert('Name your filter first.'); return; }
 
-  // Saved filters (list/create/apply/delete)
-  async function loadSaved(){
-    const list=document.getElementById('savedList'); if(!list) return;
-    list.innerHTML='<div class="text-gray-500">Loading…</div>';
-    try{
-      const r=await fetch('/api/saved-filters'); const data=await r.json(); const filters=data.filters||[];
-      if(!filters.length){list.innerHTML='<div class="text-gray-500">No saved filters yet.</div>';return;}
-      list.innerHTML='';
-      filters.forEach(f=>{
-        const row=document.createElement('div');
-        row.className='flex items-center justify-between gap-2 border rounded-md px-2 py-1';
-        const left=document.createElement('div'); left.innerHTML=`<strong>${f.name}</strong>`;
-        const actions=document.createElement('div'); actions.className='flex gap-2';
-        const applyBtn=document.createElement('a'); applyBtn.className='px-2 py-1 border rounded text-sm hover:bg-gray-50'; applyBtn.href=`/apply-saved-filter?filter_id=${encodeURIComponent(f.id)}`; applyBtn.textContent='Apply';
-        const delBtn=document.createElement('button'); delBtn.className='px-2 py-1 border rounded text-sm text-red-600 hover:bg-red-50'; delBtn.textContent='Delete';
-        delBtn.addEventListener('click',async()=>{if(!confirm('Delete saved filter?'))return; await fetch(`/api/saved-filters/${f.id}`,{method:'DELETE'}); loadSaved();});
-        actions.append(applyBtn, delBtn); row.append(left, actions); list.appendChild(row);
+      const url = new URL(window.location.href);
+      const params = new URLSearchParams(url.search);
+      const payload = { name, params: {} };
+      ['q','date_from','date_to','per_page'].forEach(k => {
+        const v = params.get(k);
+        if (v) payload.params[k] = v;
       });
-    }catch(e){console.error(e); list.innerHTML='<div class="text-gray-500">Failed to load saved filters.</div>';}
+      ['sources','topics'].forEach(k => {
+        const vals = [...params.getAll(k)];
+        if (vals.length) payload.params[k] = vals;
+      });
+
+      const r = await fetch('/api/saved-filters', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        credentials: 'same-origin'
+      });
+      if (!r.ok) { alert('Failed to save filter.'); return; }
+      if (nameInput) nameInput.value = '';
+      window.location.reload();
+    });
   }
-  document.getElementById('saveFilter')?.addEventListener('click',async(e)=>{
-    e.preventDefault();
-    const nameInput=document.getElementById('saveName'); const name=(nameInput.value||'').trim();
-    if(!name) return alert('Name your filter first.');
-    const url=new URL(window.location.href); const params=new URLSearchParams(url.search);
-    const payload={name, params:{}};
-    ['q','date_from','date_to','per_page'].forEach(k=>{const v=params.get(k); if(v) payload.params[k]=v;});
-    ['sources','topics'].forEach(k=>{const vals=[...params.getAll(k)]; if(vals.length) payload.params[k]=vals;});
-    const res=await fetch('/api/saved-filters',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
-    if(!res.ok){alert('Failed to save filter.');return;}
-    nameInput.value=''; loadSaved();
-  });
-  document.getElementById('refreshSaved')?.addEventListener('click',e=>{e.preventDefault(); loadSaved();});
-  loadSaved();
+})();
 </script>
 {% endblock %}

@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block title %}Sites{% endblock %}
+{% block content %}
+
+  <div class="page-title" style="justify-content:space-between; align-items:center;">
+    <h1>{{ org.name }} — Sites</h1>
+    <button class="btn primary small" id="btnAddSite" type="button">+ Add site</button>
+  </div>
+
+  <div class="wrap">
+    <section class="panel" style="padding:1.25rem; background:#f9fbf9; border-radius:12px;">
+      {% if sites and sites|length %}
+        <ul class="cards" style="list-style:none; padding:0; margin:0; display:grid; gap:.75rem;">
+          {% for s in sites %}
+            <li class="card" style="background:#fff; border:1px solid #d6e4d6; border-radius:12px; padding:1rem;">
+              <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap;">
+                <strong>{{ s.name }}</strong>
+                {% if s.code %}<span class="muted" style="font-size:.85rem;">{{ s.code }}</span>{% endif %}
+              </div>
+              {% if s.location %}
+                <div class="muted" style="margin-top:.25rem; font-size:.9rem;">{{ s.location }}</div>
+              {% endif %}
+              <div style="margin-top:.75rem;">
+                <a href="/orgs/{{ org_id }}/controls?site={{ s.id }}" class="btn small">View Controls</a>
+              </div>
+            </li>
+          {% endfor %}
+        </ul>
+      {% else %}
+        <p class="muted">No sites yet. Add one using the button above.</p>
+      {% endif %}
+    </section>
+  </div>
+
+  <dialog id="dlgAddSite" style="border:none; border-radius:12px; padding:0; max-width:520px; width:92%;">
+    <form method="post" action="/orgs/{{ org_id }}/sites/new" style="padding:1rem 1rem 1.2rem; background:#fff; border:1px solid var(--line); border-radius:12px;">
+      <h3 style="margin:.25rem 0 1rem;">Add site</h3>
+      <div class="stack">
+        <label>Site name
+          <input type="text" name="name" required placeholder="e.g. Leeds CHP Site">
+        </label>
+        <label>Code (optional)
+          <input type="text" name="code" placeholder="e.g. LEE-CHP-01">
+        </label>
+        <label>Location (optional)
+          <input type="text" name="location" placeholder="e.g. Leeds, UK">
+        </label>
+      </div>
+      <div style="display:flex; gap:.5rem; justify-content:flex-end; margin-top:1rem;">
+        <button type="button" class="btn" id="btnCancelSite">Cancel</button>
+        <button type="submit" class="btn primary">Create site</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script>
+    (function(){
+      const dlg = document.getElementById('dlgAddSite');
+      const openBtn = document.getElementById('btnAddSite');
+      const cancelBtn = document.getElementById('btnCancelSite');
+      if (openBtn && dlg) openBtn.addEventListener('click', () => dlg.showModal());
+      if (cancelBtn && dlg) cancelBtn.addEventListener('click', () => dlg.close());
+    })();
+  </script>
+
+{% endblock %}

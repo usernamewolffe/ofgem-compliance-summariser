@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}{{ org.name }} — Organisation{% endblock %}
+{% block content %}
+<div class="page-title">
+  <h1>{{ org.name }}</h1>
+  <a class="btn" href="/orgs/{{ org.id }}/controls">View all controls</a>
+</div>
+
+<div class="wrap">
+  <section class="panel" style="padding:1rem;">
+    <h3 style="margin-top:0;">Sites</h3>
+    {% if sites and sites|length %}
+      <ul class="cards">
+        {% for s in sites %}
+          <li class="card">
+            <div style="display:flex; justify-content:space-between; align-items:center; gap:1rem;">
+              <div>
+                <strong>{{ s.name }}</strong><br>
+                <span class="muted">
+                  Controls: {{ control_counts.get(s.name, 0) }}
+                </span>
+              </div>
+              <a class="btn small" href="/orgs/{{ org.id }}/controls?site_id={{ s.id }}">View controls</a>
+            </div>
+          </li>
+        {% endfor %}
+        <li class="card">
+          <div>
+            <strong>Organisation-wide</strong><br>
+            <span class="muted">Controls: {{ control_counts.get('Organisation-wide', 0) }}</span>
+          </div>
+        </li>
+      </ul>
+    {% else %}
+      <p class="muted">No sites yet.</p>
+    {% endif %}
+  </section>
+</div>
+{% endblock %}

@@ -5,14 +5,15 @@
   <title>{% block title %}Compliance Summaries{% endblock %}</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
-    :root{
-      --bg: #fafafa;
-      --card: #fff;
+    :root {
+      --bg: #e7f3e7;       /* soft green background */
+      --card: #ffffff;
       --ink: #111;
-      --muted: #666;
-      --line: #eaeaea;
-      --accent: #0b5fff;
+      --muted: #555;
+      --line: #d6e4d6;
+      --accent: #007c41;   /* rich green accent */
     }
+
     * { box-sizing: border-box; }
     html, body { height: 100%; }
     body {
@@ -30,6 +31,8 @@
       background: linear-gradient(180deg, #fff 0%, #fff 70%, rgba(255,255,255,0.92) 100%);
       border-bottom: 1px solid var(--line);
       padding: 0.75rem 1rem;
+      backdrop-filter: saturate(140%) blur(4px);
+      box-shadow: 0 1px 0 rgba(0,0,0,0.04);
     }
     .site-header .row {
       max-width: 1200px;
@@ -40,9 +43,43 @@
       font-weight: 700; letter-spacing: .2px; font-size: 1.05rem;
     }
     .brand a { color: inherit; text-decoration: none; }
+
+    nav {
+      display: flex; align-items: center; gap: 1rem;
+      margin-left: 1.5rem;
+    }
+    nav a {
+      color: var(--accent);
+      text-decoration: none;
+      font-weight: 500;
+    }
+    nav a:hover {
+      text-decoration: underline;
+    }
+
     .spacer { flex: 1; }
-    .user {
-      font-size: .9rem; color: var(--muted);
+
+    .header-actions {
+      display: flex;
+      align-items: center;
+      gap: .6rem;
+    }
+
+    /* Buttons */
+    .btn {
+      appearance: none; border: 1px solid var(--line);
+      background: #fff; padding: .55rem .8rem; border-radius: 8px;
+      font: inherit; cursor: pointer; text-decoration: none; color: inherit;
+    }
+    .btn.primary {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #fff;
+    }
+    .btn.small {
+      padding: .35rem .65rem;
+      font-size: .85rem;
+      border-radius: 8px;
     }
 
     /* Page wrap (grid) */
@@ -91,16 +128,7 @@
       background: #fff;
       font: inherit;
     }
-    .btn {
-      appearance: none; border: 1px solid var(--line);
-      background: #fff; padding: .55rem .8rem; border-radius: 8px;
-      font: inherit; cursor: pointer;
-    }
-    .btn.primary {
-      background: var(--accent);
-      border-color: var(--accent);
-      color: #fff;
-    }
+
     .tags { display:flex; flex-wrap:wrap; gap:.4rem; }
     .tag {
       border: 1px solid var(--line); border-radius: 999px;
@@ -142,12 +170,24 @@
   <header class="site-header">
     <div class="row">
       <div class="brand"><a href="/summaries">Ofgem Compliance Summariser</a></div>
+
+      <nav>
+        <a href="/summaries">Summaries</a>
+        <a href="/controls">Controls</a>
+          <a href="/orgs/1">Organisation</a>
+      </nav>
+
       <div class="spacer"></div>
-      {% if uid %}
-        <div class="user">Signed in</div>
-      {% else %}
-        <div class="user"><a href="/account/login">Sign in</a></div>
-      {% endif %}
+
+      <div class="header-actions">
+        {% if uid %}
+          <form method="post" action="/account/logout" style="margin:0;">
+            <button type="submit" class="btn small">Sign out</button>
+          </form>
+        {% else %}
+          <a href="/account/login" class="btn small">Sign in</a>
+        {% endif %}
+      </div>
     </div>
   </header>
 

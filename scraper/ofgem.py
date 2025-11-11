@@ -1,7 +1,18 @@
 # scraper/ofgem.py
+"""
+Collector for Ofgem / UK energy compliance-relevant updates.
+
+- Pulls from Atom/RSS feeds and selected HTML sources.
+- Cleans & normalises entries (title/link/date/content).
+- Applies per-source include/exclude keyword filters.
+- Drops social/noise links (Facebook, LinkedIn, X/Twitter, etc.).
+- Adds topic tags (CAF/NIS, Cyber, Incident, Consultation, Guidance, Enforcement, Penalty).
+"""
+
 import os
 import re
 import time
+import json
 import requests
 import feedparser
 from bs4 import BeautifulSoup
@@ -21,7 +32,7 @@ SOURCES = [
     ("dcode_mods_html",     "https://dcode.org.uk/dcode-modifications/"),
     ("dcode_consults_html", "https://dcode.org.uk/consultations/open-consultations/"),
     ("ena_html",            "https://www.energynetworks.org/all-news-and-updates"),
-    ("neso_html",           "https://www.neso.energy/news-and-events/media-centre"),  # NESO = ESO successor
+    ("neso_html",           "https://www.neso.energy/news-and-events/media-centre"),  # NESO = ESO successor (kept for later)
 
     # Cyber / data
     ("ncsc",     "https://www.ncsc.gov.uk/api/1/services/v1/all-rss-feed.xml"),
@@ -38,9 +49,24 @@ HEADERS = {
     "Accept-Language": "en-GB,en;q=0.9",
 }
 
+# --- Noise filters: social / shorteners -------------------------------------
+SOCIAL_DOMAINS = (
+    "facebook.com", "m.facebook.com", "fb.me",
+    "linkedin.com", "lnkd.in",
+    "x.com", "twitter.com", "t.co",
+    "instagram.com", "youtube.com", "youtu.be",
+    "threads.net", "reddit.com", "medium.com", "substack.com",
+)
+
+def is_social_url(url: str | None) -> bool:
+    if not url:
+        return False
+    u = (url or "").lower()
+    return any(d in u for d in SOCIAL_DOMAINS)
+
 # --- Per-source filters ------------------------------------------------------
 FILTERS = {
-    "ofgem": {
+    "OFGEM": {
         "include": [
             "licence", "licensing", "standard conditions", "consultation",
             "guidance", "enforcement", "penalty", "heat network", "generator",
@@ -49,7 +75,7 @@ FILTERS = {
         ],
         "exclude": [],
     },
-    "desnz": {
+    "DESNZ": {
         "include": [
             "contracts for difference", "cfd", "renewables obligation", "ro",
             "heat network", "chp", "funding", "grant", "consultation",
@@ -57,22 +83,22 @@ FILTERS = {
         ],
         "exclude": [],
     },
-    "ea": {
+    "EA": {
         "include": [
             "permit", "permitting", "environmental permit", "emissions",
             "flood", "abstraction", "discharge", "spill", "compliance",
         ],
-        "exclude": [],
+        "exclude": ["environmental permit application"],
     },
     # HSE: broaden so press releases get through
-    "hse": {
+    "HSE": {
         "include": [
             "electric", "electrical", "pressure system", "lifting", "turbine",
             "generator", "safety alert", "prosecution", "fine", "enforcement",
         ],
         "exclude": [],
     },
-    "elexon": {
+    "Elexon": {
         "include": [
             "bsc", "settlement", "meter", "metering", "imbalance",
             "market-wide half-hourly", "mhhs", "modification",
@@ -80,7 +106,7 @@ FILTERS = {
         ],
         "exclude": [],
     },
-    "dcode": {
+    "DCode": {
         "include": [
             "distribution code", "engineering recommendation", "g59", "g98",
             "g99", "connection", "fault ride through", "embedded generation",
@@ -88,14 +114,14 @@ FILTERS = {
         ],
         "exclude": [],
     },
-    "ena": {
+    "ENA": {
         "include": [
             "engineering recommendation", "er p2", "er p28", "cyber",
             "resilience", "connection", "network code", "open networks",
         ],
         "exclude": [],
     },
-    "neso": {
+    "NESO": {
         "include": [
             "grid", "system operator", "operability", "connections", "queue",
             "winter outlook", "balancing", "constraint", "intertrip",
@@ -103,7 +129,7 @@ FILTERS = {
         ],
         "exclude": [],
     },
-    "ncsc": {
+    "NCSC": {
         "include": [
             "industrial control", "ics", "scada", "ot", "operational technology",
             "energy", "electric", "power", "cve-", "ransom", "malware",
@@ -111,11 +137,11 @@ FILTERS = {
         ],
         "exclude": [],
     },
-    "ico": {
+    "ICO": {
         "include": ["breach", "security", "incident", "guidance", "enforcement", "fine", "penalty"],
         "exclude": ["job", "vacancy", "podcast", "webinar", "event"],
     },
-    "rea": {
+    "REA": {
         "include": [
             "wind", "hydro", "chp", "biomass", "renewable", "planning",
             "grid connection", "business rates", "support scheme", "funding",
@@ -123,6 +149,7 @@ FILTERS = {
         "exclude": [],
     },
 }
+
 # --- Topic tagging rules -----------------------------------------------------
 TOPIC_RULES = {
     "CAF/NIS": [
@@ -155,9 +182,7 @@ TOPIC_RULES = {
     ],
 }
 
-
 BYPASS = os.getenv("BYPASS_FILTERS", "0") == "1"
-
 
 # --- Core utils --------------------------------------------------------------
 
@@ -179,8 +204,6 @@ def _clean_text(html: str) -> str:
     text = re.sub(r"(skip to main content|sign in|register|search|toggle menu|show/hide menu)", " ", text, flags=re.I)
     return re.sub(r"\s+", " ", text).strip()
 
-
-
 def _is_pdf_url(url: str) -> bool:
     """Return True if the URL points to a PDF (by path or Content-Type)."""
     try:
@@ -194,7 +217,6 @@ def _is_pdf_url(url: str) -> bool:
     except Exception:
         # On any error, be conservative and treat as non-PDF to avoid blocking content
         return False
-
 
 def _fetch(url: str, tries: int = 3, backoff: float = 1.6) -> str:
     last_err = None
@@ -260,8 +282,7 @@ def _passes_filters(source: str, title: str, body: str) -> bool:
 
 # --- HTML scrapers -----------------------------------------------------------
 
-def _jsonld_news(soup):
-    import json
+def _jsonld_news(soup: BeautifulSoup):
     seen = set()
     for tag in soup.find_all("script", attrs={"type": "application/ld+json"}):
         txt = (tag.string or tag.get_text() or "").strip()
@@ -367,7 +388,6 @@ def _scrape_dcode_list(url: str):
     seen = set()
 
     # The open consultations page has cards or list entries that link directly to consultation pages.
-    # We only take those links on THIS page, not from subpages or navigation.
     for a in soup.select("main a[href], article a[href], .consultation-list a[href], .entry-content a[href]"):
         href = a.get("href")
         title = (a.get_text(strip=True) or "").strip()
@@ -386,9 +406,7 @@ def _scrape_dcode_list(url: str):
         if not any(x in path for x in ("open-consultations", "consultation-")):
             continue
         if link.rstrip("/") == url.rstrip("/"):
-            # skip self-link to the index page
             continue
-        # skip obvious non-consultation paths (pdfs, downloads, etc.)
         if link.lower().endswith(".pdf"):
             continue
 
@@ -403,7 +421,6 @@ def _scrape_dcode_list(url: str):
     print(f"[dcode_html] filtered to {len(results)} open consultations")
     return results
 
-
 def _scrape_ena_news(url: str):
     html = _fetch(url)
     soup = BeautifulSoup(html, "html.parser")
@@ -415,24 +432,11 @@ def _scrape_ena_news(url: str):
         link = urljoin(url, href)
         yield {"link": link, "title": title, "id": link, "published": None, "summary": ""}
 
-#def _scrape_neso_news(url: str):
- #   html = _fetch(url)
-  #  soup = BeautifulSoup(html, "html.parser")
-   # for a in soup.select("a[href*='/news-and-events/']"):
-    #    href = a.get("href")
-     #   title = (a.get_text(strip=True) or "").strip()
-      #  if not href or not title:
-#            continue
-#        link = urljoin(url, href)
-#        path = urlparse(link).path.rstrip("/").lower()
+# Placeholder if we later re-enable NESO HTML scraping:
+# def _scrape_neso_news(url: str):
+#     ...
 
-        # skip index/pagination/category hubs
-#        if any(x in path for x in ("/media-centre", "/news-and-events")) and path.count("/") <= 4:
-#            continue
-#        if "page=" in link:
-#            continue
-
-#        yield {"link": link, "title": title, "id": link, "published": None, "summary": ""}
+# --- Topic tagging -----------------------------------------------------------
 
 def _topic_tags(title: str, content: str) -> list[str]:
     """Return a list of topic tags matched against title+content."""
@@ -442,13 +446,11 @@ def _topic_tags(title: str, content: str) -> list[str]:
     for tag, patterns in TOPIC_RULES.items():
         for pat in patterns:
             if pat.startswith(r"\b") or any(ch in pat for ch in r"[]()?*+{}|\b"):
-                # treat as regex
                 try:
                     if _re.search(pat, blob, flags=_re.IGNORECASE):
                         hit.append(tag)
                         break
                 except Exception:
-                    # bad regex pattern -> ignore gracefully
                     continue
             else:
                 if pat.lower() in blob:
@@ -462,7 +464,6 @@ def _topic_tags(title: str, content: str) -> list[str]:
             seen.add(t)
             out.append(t)
     return out
-
 
 # --- Main collector ----------------------------------------------------------
 
@@ -498,14 +499,9 @@ def collect_items():
                 continue
             base_src = "ena"
 
- #       elif src == "neso_html":
- #           try:
- #               parsed_entries = list(_scrape_neso_news(feed_url))
- #               print(f"[{src}] (html) {len(parsed_entries)} entries fetched")
- #           except Exception as e:
- #               print(f"[{src}] HTML scrape error: {e}")
- #               continue
- #           base_src = "neso"
+        # elif src == "neso_html":
+        #     parsed_entries = list(_scrape_neso_news(feed_url))
+        #     base_src = "neso"
 
         else:
             # Default: Atom/RSS
@@ -529,6 +525,12 @@ def collect_items():
                 or _parse_date(e.get("updated"))
                 or _parse_date(e.get("issued"))
             )
+
+            # 🚫 Skip social/noise links early
+            if is_social_url(link):
+                skipped += 1
+                # print(f"[skip:{base_src}] social/noise {link}")
+                continue
 
             summary_html = e.get("summary") or e.get("description") or ""
             content = _clean_text(summary_html) if isinstance(summary_html, str) and summary_html else ""
@@ -558,17 +560,14 @@ def collect_items():
                 "title": title,
                 "published_at": published,
                 "content": content,
-                "tags": tags,  # <-- now a proper list of topics + source
+                "tags": tags,  # list of topics + source
             }
-
-
 
         print(f"[{src}] kept {kept} · skipped {skipped}")
 
 # -----------------------------------------------------------------------------
 
-
 if __name__ == "__main__":
-    import itertools, json
+    import itertools
     items = list(itertools.islice(collect_items(), 12))
     print(json.dumps(items, indent=2)[:3000])

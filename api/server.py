@@ -1,26 +1,120 @@
 # api/server.py
-from dotenv import load_dotenv; load_dotenv()
+from dotenv import load_dotenv
+load_dotenv()
 
+# ---------------------------------------------------------------------------
+# Imports
+# ---------------------------------------------------------------------------
 import os, csv, io, json, requests, sqlite3, re
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from typing import Optional, List, Set, Dict, Any, Tuple
 from urllib.parse import urlparse, urlencode
 
-from fastapi import FastAPI, Request, Query, HTTPException, Form, Body
-from fastapi.responses import RedirectResponse, StreamingResponse, HTMLResponse, JSONResponse, PlainTextResponse
+from fastapi import FastAPI, Request, Query, HTTPException, Form, Body, APIRouter
+from fastapi.responses import (
+    RedirectResponse,
+    StreamingResponse,
+    HTMLResponse,
+    JSONResponse,
+    PlainTextResponse,
+)
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from jinja2 import TemplateNotFound, ChoiceLoader, FileSystemLoader
 from starlette.middleware.sessions import SessionMiddleware
-from pydantic import BaseModel
-from jinja2 import TemplateNotFound
+from starlette.middleware.base import BaseHTTPMiddleware
 from passlib.context import CryptContext
+from pydantic import BaseModel
 
+from tools.email_utils import send_article_email
 from storage.db import DB
+from fastapi import Form
+# ---------------------------------------------------------------------------
+# App setup
+# ---------------------------------------------------------------------------
+app = FastAPI()
+
+# Templates
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
 
 # ---------------------------------------------------------------------------
-# Constants
+# Rolling Session Middleware (handles inactivity)
 # ---------------------------------------------------------------------------
+INACTIVITY_SECONDS = int(os.getenv("INACTIVITY_SECONDS", str(3 * 60 * 60)))  # 3h
+
+class RollingSessionMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        now = datetime.now(timezone.utc)
+
+        def is_api(req: Request) -> bool:
+            accept = (req.headers.get("accept") or "").lower()
+            return req.url.path.startswith("/api/") or "application/json" in accept
+
+        # If logged in, check inactivity
+        if "session" in request.scope and request.session.get("uid"):
+            last = request.session.get("last_activity")
+            try:
+                last_dt = datetime.fromisoformat(last) if last else now
+            except Exception:
+                last_dt = now
+
+            if (now - last_dt) > timedelta(seconds=INACTIVITY_SECONDS):
+                request.session.clear()
+                if is_api(request):
+                    return JSONResponse({"detail": "Session expired"}, status_code=401)
+                return RedirectResponse("/account/login", status_code=303)
+
+            # Update last activity (rolling)
+            request.session["last_activity"] = now.isoformat()
+
+        response = await call_next(request)
+
+        # Refresh cookie expiry if active
+        if "session" in request.scope and request.session.get("uid"):
+            cookie_val = request.cookies.get(SESSION_COOKIE)
+            if cookie_val:
+                response.set_cookie(
+                    key=SESSION_COOKIE,
+                    value=cookie_val,
+                    max_age=INACTIVITY_SECONDS,
+                    httponly=True,
+                    secure=False,  # True in production
+                    samesite="lax",
+                    path="/",
+                )
+
+        return response
+
+# ---------------------------------------------------------------------------
+# Sessions & Middleware (Session added last so it runs first)
+# ---------------------------------------------------------------------------
+SESSION_COOKIE = os.getenv("SESSION_COOKIE", "ofgem_session")
+SESSION_MAX_AGE = int(os.getenv("SESSION_MAX_AGE", str(3 * 60 * 60)))  # 3h
+
+# 1️⃣ Add RollingSessionMiddleware first (inner)
+app.add_middleware(RollingSessionMiddleware)
+
+# 2️⃣ Add SessionMiddleware last (outermost, runs first)
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=os.getenv("SESSIONS_SECRET", "dev-only-change-me"),
+    session_cookie=SESSION_COOKIE,
+    max_age=SESSION_MAX_AGE,
+    same_site="lax",
+    https_only=False,  # set True in production behind HTTPS
+)
+
+# ---------------------------------------------------------------------------
+# Continue with your routes, login handlers, etc.
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Continue with your routes and other setup below...
+# ---------------------------------------------------------------------------
+
+
 TOPIC_TAGS = [
     "CAF/NIS", "Cyber", "Incident", "Consultation", "Guidance", "Enforcement", "Penalty"
 ]
@@ -29,17 +123,8 @@ TOPIC_TAGS = [
 BASE_DIR = Path(__file__).resolve().parent.parent
 SQLITE_DB_PATH = (BASE_DIR / "ofgem.db").as_posix()
 
-# ---------------------------------------------------------------------------
-# App + plumbing
-# ---------------------------------------------------------------------------
-app = FastAPI(debug=True)
 
-app.add_middleware(
-    SessionMiddleware,
-    secret_key=os.getenv("SESSIONS_SECRET", "dev-secret"),
-    same_site="lax",
-    https_only=False,
-)
+
 
 # Project DB wrapper
 db = DB("ofgem.db")
@@ -62,9 +147,19 @@ def items_json():
         return JSONResponse({"error": "items.json not found. Run tools/export_json.py first."}, status_code=404)
     return FileResponse(path, media_type="application/json")
 
-# Templates: summariser/templates/summariser
 TEMPLATES_DIR = BASE_DIR / "summariser" / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+
+# Make the loader search both the root and the 'account' subdir explicitly
+templates.env.loader = ChoiceLoader([
+    FileSystemLoader(str(TEMPLATES_DIR)),
+    FileSystemLoader(str(TEMPLATES_DIR / "account")),
+])
+
+# Helper available in Jinja (used in pagination links)
+from urllib.parse import urlencode as _urlencode
+templates.env.globals["urlencode"] = _urlencode
+
 # Add urlencode helper for templates (used in pagination)
 from urllib.parse import urlencode as _urlencode
 templates.env.globals["urlencode"] = _urlencode
@@ -320,18 +415,20 @@ def render(request: Request, template_name: str, ctx: dict | None = None):
     try:
         return templates.TemplateResponse(template_name, ctx)
     except TemplateNotFound:
+        # Use Jinja2 environment's search path for error messages
+        search_dirs = getattr(templates.env.loader, "searchpath", [])
+        searched = ", ".join(search_dirs) if search_dirs else "(unknown)"
         bare = Path(template_name).name
         if bare != template_name:
             try:
                 return templates.TemplateResponse(bare, ctx)
             except TemplateNotFound as e2:
                 return PlainTextResponse(
-                    f"Template not found: '{template_name}' or '{bare}'.\n"
-                    f"Searched in: {templates.directory}\n\n{e2}",
+                    f"Template not found: '{template_name}' or '{bare}'.\nSearched in: {searched}\n\n{e2}",
                     status_code=500,
                 )
         return PlainTextResponse(
-            f"Template not found: '{template_name}'.\nSearched in: {templates.directory}",
+            f"Template not found: '{template_name}'.\nSearched in: {searched}",
             status_code=500,
         )
     except Exception as e:
@@ -397,6 +494,7 @@ def summaries_page(
 ):
     all_items = db.list_items(limit=20000)
 
+    # helper: date range check
     def in_date_range(dt_str: str) -> bool:
         if not (date_from or date_to):
             return True
@@ -410,10 +508,11 @@ def summaries_page(
             return False
         return True
 
-    q_lower = q.lower().strip()
+    q_lower = (q or "").lower().strip()
     src_set: Set[str] = set(sources or [])
     topic_set = {t.lower() for t in (topics or [])}
 
+    # filter
     filtered: List[dict] = []
     for e in all_items:
         text = f"{e.get('title','')} {e.get('content','')} {e.get('summary','')}".lower()
@@ -432,20 +531,28 @@ def summaries_page(
 
         filtered.append(e)
 
-    filtered.sort(key=lambda e: e.get("published_at", ""), reverse=True)
+    # sort newest first
+    filtered.sort(key=lambda e: e.get("published_at", "") or "", reverse=True)
 
+    # pagination
     page = max(1, int(page))
     per_page = max(1, min(200, int(per_page)))
     total = len(filtered)
     start = (page - 1) * per_page
     end = start + per_page
-    page_items = filtered[start:end]
+    page_items = filtered[start:end]              # <-- ensures defined
     total_pages = (total + per_page - 1) // per_page if total else 1
     page_numbers = list(range(max(1, page - 2), min(total_pages, page + 2) + 1))
 
+    # sources list & default selection on first load
     all_sources = sorted({(i.get("source") or "").strip() for i in all_items if i.get("source")})
     if not sources and not any([q, date_from, date_to, topics, page != 1]):
         sources = list(all_sources)
+
+    # saved filters only if signed in
+    uid = get_user_id(request)
+    saved_filters = db.list_saved_filters() if uid else []
+
     return render(
         request,
         "summaries.html",
@@ -464,8 +571,100 @@ def summaries_page(
             },
             "all_sources": all_sources,
             "all_topics": TOPIC_TAGS,
+            "saved_filters": saved_filters,
         },
     )
+# --- Organisations ----------------------------------------------------------
+
+
+# --- Sites Index ------------------------------------------------------------
+@app.get("/orgs/{org_id}/sites")
+def list_sites_page(request: Request, org_id: int):
+    db = DB(os.getenv("DB_PATH", "ofgem.db"))
+    orgs = db.list_orgs()
+    org = next((o for o in orgs if o["id"] == org_id), None)
+    sites = db.list_sites(org_id)
+    return templates.TemplateResponse(
+        "sites.html",
+        {
+            "request": request,
+            "uid": request.session.get("uid"),
+            "org": org,
+            "org_id": org_id,
+            "sites": sites,
+        },
+    )
+
+# --- Add a new site ---------------------------------------------------------
+@app.post("/orgs/{org_id}/sites/new")
+def create_site(
+    request: Request,
+    org_id: int,
+    name: str = Form(...),
+    code: str | None = Form(None),
+    location: str | None = Form(None),
+):
+    db = DB(os.getenv("DB_PATH", "ofgem.db"))
+    if not name.strip():
+        return JSONResponse({"detail": "Name required"}, status_code=400)
+    db.upsert_site(org_id, name, code, location)
+    return RedirectResponse(url=f"/orgs/{org_id}/sites", status_code=303)
+
+@app.get("/orgs/{org_id}")
+def org_root_redirect(org_id: int):
+    # convenience: /orgs/1 -> /orgs/1/controls
+    return RedirectResponse(url=f"/orgs/{org_id}/controls", status_code=307)
+
+@app.get("/orgs/{org_id}/controls")
+def org_controls_page(request: Request, org_id: int, site: Optional[int] = None):
+    db = DB(os.getenv("DB_PATH", "ofgem.db"))
+    orgs = db.list_orgs()
+    org = next((o for o in orgs if o["id"] == org_id), None)
+    sites = db.list_sites(org_id)
+
+    if site:
+        controls = db.list_org_controls(org_id, site_id=site)
+        current_site = next((s for s in sites if s["id"] == site), None)
+    else:
+        controls = db.list_org_controls(org_id)
+        current_site = None
+
+    grouped = {}
+    for c in controls:
+        group = c.get("site_name") or (current_site["name"] if current_site else "Org-wide")
+        grouped.setdefault(group, []).append(c)
+
+    return templates.TemplateResponse(
+        "org_controls.html",
+        {
+            "request": request,
+            "uid": request.session.get("uid"),
+            "org": org,
+            "org_id": org_id,
+            "sites": sites,
+            "grouped": grouped,
+            "current_site": current_site,
+        },
+    )
+
+@app.post("/orgs/{org_id}/sites/new")
+def create_site(
+    request: Request,
+    org_id: int,
+    name: str = Form(...),
+    code: str | None = Form(None),
+    location: str | None = Form(None),
+):
+    db = DB(os.getenv("DB_PATH", "ofgem.db"))
+    if not name.strip():
+        return JSONResponse({"detail": "Name is required"}, status_code=400)
+    db.upsert_site(org_id, name, code, location)
+    return RedirectResponse(url=f"/orgs/{org_id}/controls", status_code=303)
+
+@app.get("/orgs/{org_id}/sites/new")
+def new_site_form(request: Request, org_id: int):
+    return templates.TemplateResponse("site_new.html", {"request": request, "org_id": org_id, "uid": request.session.get("uid")})
+
 
 # ---------------------------------------------------------------------------
 # Saved Filters API
@@ -519,6 +718,63 @@ def apply_saved_filter(filter_id: int):
         return RedirectResponse(url=f"/summaries?{query}")
     except Exception:
         raise HTTPException(status_code=400, detail="Saved filter has invalid params")
+
+ # from the helper we made earlier
+
+router = APIRouter()
+db = DB(os.getenv("DB_PATH", "ofgem.db"))
+
+@app.get("/controls", response_class=HTMLResponse)
+def controls_page(request: Request):
+    db = DB()
+    all_controls = db.list_controls()
+    return templates.TemplateResponse(
+        "controls.html",
+        {
+            "request": request,
+            "uid": request.session.get("uid"),
+            "controls": all_controls,
+            "org_id": 1,   # TODO: select the current org; 1 as MVP default
+        },
+    )
+
+@router.get("/controls/{cid}", response_class=HTMLResponse)
+def control_detail(request: Request, cid: int):
+    # items linked via the view
+    items = db.list_items_for_org_control(cid, limit=100)
+    # current org control
+    oc = [r for r in db.list_org_controls(1) if r["id"]==cid]
+    return templates.TemplateResponse("control_detail.html", {"request": request, "control": oc[0] if oc else None, "items": items})
+
+app.include_router(router)
+
+@router.post("/send", response_class=HTMLResponse)
+async def send_article_fragment(guid: str = Form(...), email: str = Form(...)):
+    # find the item
+    items = [i for i in db.list_items(limit=5000) if i.get("guid") == guid]
+    if not items:
+        return HTMLResponse(
+            "<p class='muted' style='color:#b00;'>❌ Article not found.</p>",
+            status_code=404
+        )
+
+    item = items[0]
+    ok = send_article_email(email, item)
+
+    if ok:
+        return HTMLResponse(
+            f"<p class='muted'>✅ Sent to <strong>{email}</strong></p>",
+            status_code=200
+        )
+    else:
+        return HTMLResponse(
+            "<p class='muted' style='color:#b00;'>❌ Failed to send. Please try again.</p>",
+            status_code=502
+        )
+
+# register the router (if not already)
+app.include_router(router)
+
 
 # ---------------------------------------------------------------------------
 # AI Summary API (+ PDF handling)
@@ -811,15 +1067,6 @@ def require_user(request: Request) -> int:
     return uid
 
 # Aliases
-@app.get("/login")
-def login_alias():
-    return RedirectResponse("/account/login", status_code=308)
-
-@app.get("/register")
-def register_alias():
-    return RedirectResponse("/account/register", status_code=308)
-
-# Account pages (GET)
 @app.get("/account/login", response_class=HTMLResponse)
 def account_login_get(request: Request):
     return render(request, "account/login.html", {"error": ""})
@@ -828,6 +1075,15 @@ def account_login_get(request: Request):
 def account_register_get(request: Request):
     return render(request, "account/register.html", {"error": ""})
 
+@app.get("/login")
+def login_alias():
+    return RedirectResponse("/account/login", status_code=308)
+
+@app.get("/register")
+def register_alias():
+    return RedirectResponse("/account/register", status_code=308)
+
+
 # Account actions (POST)
 @app.post("/account/login")
 def account_login_post(request: Request, email: str = Form(...), password: str = Form(...)):
@@ -835,6 +1091,7 @@ def account_login_post(request: Request, email: str = Form(...), password: str =
     if not user or not pwd_ctx.verify(password, user["password_hash"]):
         return render(request, "account/login.html", {"error": "Invalid credentials"})
     request.session["uid"] = user["id"]
+    request.session["last_activity"] = datetime.now(timezone.utc).isoformat()   # ← add this
     return RedirectResponse(url="/summaries", status_code=302)
 
 @app.post("/account/register")
@@ -850,12 +1107,14 @@ def account_register_post(
         return render(request, "account/register.html", {"error": "Email already registered"})
     uid = _create_user(email, pwd_ctx.hash(password))
     request.session["uid"] = uid
+    request.session["last_activity"] = datetime.now(timezone.utc).isoformat()   # ← add this
     return RedirectResponse(url="/summaries", status_code=302)
 
 @app.post("/account/logout")
 def account_logout_post(request: Request):
     request.session.clear()
-    return RedirectResponse(url="/summaries", status_code=302)
+    return RedirectResponse(url="/account/login", status_code=302)
+
 
 # ---------------------------------------------------------------------------
 # Folders & Saved items

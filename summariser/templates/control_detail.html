@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}Control: {{ control.title }}{% endblock %}
+{% block content %}
+<h1>{{ control.title }}</h1>
+<p class="muted">{{ control.description }}</p>
+<h3 style="margin-top:1rem;">Recent linked items</h3>
+<ul class="cards">
+  {% for e in items %}
+    <li class="card">
+      <h4><a href="{{ e.link }}" target="_blank" rel="noopener">{{ e.title }}</a></h4>
+      <div class="muted">{{ e.source }} • {{ e.published_at }}</div>
+      <p style="margin:.6rem 0 0">{{ (e.ai_summary or '')[:320] }}{% if (e.ai_summary or '')|length > 320 %}…{% endif %}</p>
+    </li>
+  {% endfor %}
+</ul>
+{% endblock %}
+tml>
