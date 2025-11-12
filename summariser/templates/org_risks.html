@@ -1,0 +1,192 @@
+{% extends "base.html" %}
+{% block title %}{{ org.name }} — Risks{% endblock %}
+
+{% block content %}
+<div class="mx-auto max-w-6xl px-4 sm:px-6 lg:px-8 py-4 grid gap-4 lg:grid-cols-[320px_1fr]">
+
+  <!-- Sidebar -->
+  <aside class="rounded-xl border border-gray-100 p-4 bg-white">
+    <nav class="text-xs text-gray-500 mb-2">
+      <a href="/orgs/{{ org_id }}" class="hover:underline">{{ org.name }}</a> / <span>Org-wide risks</span>
+    </nav>
+
+    <h2 class="text-lg font-semibold">Org-wide risks</h2>
+    <p class="text-sm text-gray-600 mt-1">
+      Risks that apply at the organisation level (not tied to a specific site).
+    </p>
+
+    <!-- Quick links -->
+    <div class="mt-4 grid grid-cols-2 gap-2 text-sm">
+      <a href="/orgs/{{ org_id }}/org-controls" class="px-3 py-2 border rounded-md hover:bg-gray-50">Org controls</a>
+      <a href="/orgs/{{ org_id }}/sites" class="px-3 py-2 border rounded-md hover:bg-gray-50">All sites</a>
+    </div>
+
+    <!-- Filters (optional: only shown if you pass choices in context) -->
+    <form method="get" class="mt-4 space-y-2 text-sm">
+      {% if status_choices %}
+        <label class="block">
+          <span class="text-gray-600">Status</span>
+          <select name="status" class="mt-1 w-full rounded-md border border-gray-300 px-2 py-1.5">
+            <option value="">Any</option>
+            {% for s in status_choices %}
+              <option value="{{ s }}" {% if active.status == s %}selected{% endif %}>{{ s }}</option>
+            {% endfor %}
+          </select>
+        </label>
+      {% endif %}
+
+      {% if severity_choices %}
+        <label class="block">
+          <span class="text-gray-600">Severity</span>
+          <select name="severity" class="mt-1 w-full rounded-md border border-gray-300 px-2 py-1.5">
+            <option value="">Any</option>
+            {% for v in severity_choices %}
+              <option value="{{ v }}" {% if active.severity == v %}selected{% endif %}>{{ v }}</option>
+            {% endfor %}
+          </select>
+        </label>
+      {% endif %}
+
+      {% if category_choices %}
+        <label class="block">
+          <span class="text-gray-600">Category</span>
+          <select name="category" class="mt-1 w-full rounded-md border border-gray-300 px-2 py-1.5">
+            <option value="">Any</option>
+            {% for c in category_choices %}
+              <option value="{{ c }}" {% if active.category == c %}selected{% endif %}>{{ c }}</option>
+            {% endfor %}
+          </select>
+        </label>
+      {% endif %}
+
+      <div class="flex gap-2">
+        <button class="px-3 py-1.5 border rounded-md hover:bg-gray-50" type="submit">Apply</button>
+        <a class="px-3 py-1.5 border rounded-md hover:bg-gray-50" href="/orgs/{{ org_id }}/org-risks">Reset</a>
+      </div>
+    </form>
+  </aside>
+
+  <!-- Main -->
+  <main class="space-y-4">
+    <div class="flex items-center justify-between">
+      <h3 class="text-base font-semibold">Risks ({{ risks|length if risks is defined else 0 }})</h3>
+      <div class="flex gap-2">
+        <a class="px-3 py-1.5 text-sm border rounded-md hover:bg-gray-50"
+           href="/orgs/{{ org_id }}">Back to overview</a>
+        <a class="px-3 py-1.5 text-sm border rounded-md hover:bg-gray-50"
+           href="/orgs/{{ org_id }}/org-risks/new">+ New risk</a>
+      </div>
+    </div>
+
+    {% if not risks or risks|length == 0 %}
+      <div class="rounded-xl border border-gray-100 bg-white p-4 text-sm text-gray-600">
+        No org-wide risks yet. Click <em>+ New risk</em> to add one.
+      </div>
+    {% else %}
+      <div class="rounded-xl border border-gray-100 bg-white overflow-hidden">
+        <table class="w-full text-sm">
+          <thead class="bg-gray-50 text-gray-600">
+            <tr>
+              <th class="text-left px-4 py-2">Risk</th>
+              <th class="text-left px-4 py-2">Status</th>
+              <th class="text-left px-4 py-2">Severity</th>
+              <th class="text-left px-4 py-2">Owner</th>
+              <th class="text-left px-4 py-2">Controls</th>
+              <th class="text-left px-4 py-2">Updated</th>
+              <th class="px-4 py-2"></th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for r in risks %}
+              <tr class="border-t">
+                <td class="align-top px-4 py-3">
+                  <div class="font-medium">
+                    <a class="hover:underline" href="/orgs/{{ org_id }}/org-risks/{{ r.id }}">{{ r.code or ('R-' ~ r.id) }}</a>
+                    — {{ r.title or '(untitled)' }}
+                  </div>
+                  {% if r.category %}
+                    <div class="text-xs text-gray-500 mt-0.5">{{ r.category }}</div>
+                  {% endif %}
+                </td>
+                <td class="align-top px-4 py-3">
+                  {% set st = (r.status or 'Open') %}
+                  <span class="inline-block px-2 py-0.5 rounded-full text-xs
+                               {% if st|lower == 'open' %}bg-amber-100 text-amber-900
+                               {% elif st|lower in ['mitigated','in progress'] %}bg-blue-100 text-blue-900
+                               {% elif st|lower == 'closed' %}bg-emerald-100 text-emerald-900
+                               {% else %}bg-gray-100 text-gray-900{% endif %}">
+                    {{ st }}
+                  </span>
+                </td>
+                <td class="align-top px-4 py-3">
+                  {% set sev = (r.severity or '') %}
+                  <span class="inline-block px-2 py-0.5 rounded-full text-xs
+                               {% if sev|lower in ['high','severe'] %}bg-red-100 text-red-900
+                               {% elif sev|lower in ['medium','moderate'] %}bg-amber-100 text-amber-900
+                               {% elif sev|lower in ['low'] %}bg-emerald-100 text-emerald-900
+                               {% else %}bg-gray-100 text-gray-900{% endif %}">
+                    {{ sev or '—' }}
+                  </span>
+                </td>
+                <td class="align-top px-4 py-3">
+                  {% if r.owner_name %}
+                    <div>{{ r.owner_name }}</div>
+                    {% if r.owner_email %}
+                      <div class="text-xs"><a class="hover:underline" href="mailto:{{ r.owner_email }}">{{ r.owner_email }}</a></div>
+                    {% endif %}
+                  {% else %}
+                    <span class="text-gray-400">Unassigned</span>
+                  {% endif %}
+                </td>
+                <td class="align-top px-4 py-3">
+                  {% if r.controls and r.controls|length %}
+                    <ul class="space-y-0.5">
+                      {% for c in r.controls[:4] %}
+                        <li>
+                          <a class="hover:underline" href="/orgs/{{ org_id }}/org-controls/{{ c.id }}">
+                            {{ c.code or ('C-' ~ c.id) }} — {{ c.title }}
+                          </a>
+                        </li>
+                      {% endfor %}
+                      {% if r.controls|length > 4 %}
+                        <li class="text-xs text-gray-500">+ {{ r.controls|length - 4 }} more</li>
+                      {% endif %}
+                    </ul>
+                  {% elif r.controls_count is defined %}
+                    <span class="text-gray-500">{{ r.controls_count }} linked</span>
+                  {% else %}
+                    <span class="text-gray-400">None</span>
+                  {% endif %}
+                </td>
+                <td class="align-top px-4 py-3 text-gray-600">
+                  {{ r.updated_at or r.created_at or '—' }}
+                </td>
+                <td class="align-top px-4 py-3 text-right whitespace-nowrap">
+                  <a class="px-3 py-1.5 border rounded-md hover:bg-gray-50"
+                     href="/orgs/{{ org_id }}/org-risks/{{ r.id }}">Open</a>
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Pagination (optional) -->
+      {% if total_pages and total_pages > 1 %}
+        <nav class="flex gap-2 justify-end text-sm mt-3">
+          {% for n in page_numbers %}
+            {% if n == page %}
+              <span class="px-3 py-1.5 border rounded-md bg-gray-50">{{ n }}</span>
+            {% else %}
+              <a class="px-3 py-1.5 border rounded-md hover:bg-gray-50"
+                 href="?page={{ n }}{% if active.status %}&status={{ active.status|urlencode }}{% endif %}{% if active.severity %}&severity={{ active.severity|urlencode }}{% endif %}{% if active.category %}&category={{ active.category|urlencode }}{% endif %}">
+                {{ n }}
+              </a>
+            {% endif %}
+          {% endfor %}
+        </nav>
+      {% endif %}
+    {% endif %}
+  </main>
+</div>
+{% endblock %}

@@ -26,10 +26,15 @@ from starlette.middleware.sessions import SessionMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from passlib.context import CryptContext
 from pydantic import BaseModel
+from datetime import datetime, timezone
 
 from tools.email_utils import send_article_email
 from storage.db import DB
 from fastapi import Form
+# api/server.py
+from fastapi.staticfiles import StaticFiles
+
+
 
 from fastapi import Body  # if not already imported
 
@@ -43,6 +48,7 @@ def current_user_email(request: Request) -> str:
 # App setup
 # ---------------------------------------------------------------------------
 app = FastAPI()
+app.mount("/static", StaticFiles(directory="web/static"), name="static")
 
 # Templates
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -262,105 +268,88 @@ def _set_cached_ai_summary(guid: str, summary: str) -> None:
 
 
 # -----------------------------
-# Folder helpers (self-contained)
-# -----------------------------
-def _list_folders(user_id: int) -> List[dict]:
+# server.py — replace the folder + saved-items helpers with these
+
+def _list_folders(user_email: str) -> list[dict]:
     return _sql_all(
-        "SELECT id, name, created_at FROM folders WHERE user_id = ? ORDER BY LOWER(name)",
-        (user_id,),
+        "SELECT id, name, created_at FROM folders WHERE user_email = ? ORDER BY LOWER(name)",
+        (user_email,),
     )
 
-def _create_folder(user_id: int, name: str) -> int:
+def _create_folder(user_email: str, name: str) -> int:
     name = (name or "").strip()
     if not name:
         raise HTTPException(400, "Folder name cannot be empty")
-    if len(name) > 100:
-        raise HTTPException(400, "Folder name is too long (max 100 chars)")
     try:
-        _sql_exec("INSERT INTO folders (user_id, name) VALUES (?, ?)", (user_id, name))
+        _sql_exec("INSERT INTO folders (user_email, name, created_at) VALUES (?, ?, datetime('now'))",
+                  (user_email, name))
     except Exception:
-        existing = _sql_one(
-            "SELECT id FROM folders WHERE user_id = ? AND name = ?",
-            (user_id, name),
-        )
+        existing = _sql_one("SELECT id FROM folders WHERE user_email = ? AND name = ?",
+                            (user_email, name))
         if existing:
             raise HTTPException(409, "Folder already exists")
         raise
-    row = _sql_one(
-        "SELECT id FROM folders WHERE user_id = ? AND name = ?",
-        (user_id, name),
-    )
+    row = _sql_one("SELECT id FROM folders WHERE user_email = ? AND name = ?",
+                   (user_email, name))
     if not row:
         raise HTTPException(500, "Failed to create folder")
     return int(row["id"])
 
-# -----------------------------
-# Saved items helpers (self-contained)
-# -----------------------------
-def _save_item(user_id: int, guid: str, folder_id: int | None = None) -> None:
-    guid = (guid or "").strip()
-    if not guid:
+def _save_item(user_email: str, item_guid: str, folder_id: int | None = None) -> None:
+    item_guid = (item_guid or "").strip()
+    if not item_guid:
         raise HTTPException(400, "Missing guid")
 
-    # ✅ Check folder ownership if a folder_id is provided
     if folder_id is not None:
-        owner = _sql_one(
-            "SELECT id FROM folders WHERE id = ? AND user_id = ?",
-            (folder_id, user_id),
-        )
+        owner = _sql_one("SELECT id FROM folders WHERE id = ? AND user_email = ?",
+                         (folder_id, user_email))
         if not owner:
             raise HTTPException(400, "Folder not found")
 
-    # ✅ Prevent duplicate saves
     existing = _sql_one(
-        "SELECT 1 FROM saved_items WHERE user_id = ? AND guid = ?",
-        (user_id, guid),
+        "SELECT 1 FROM saved_items WHERE user_email = ? AND item_guid = ?",
+        (user_email, item_guid),
     )
     if existing:
         raise HTTPException(409, "Item already saved")
 
-    # ✅ Save new item
     _sql_exec(
-        "INSERT INTO saved_items (user_id, guid, folder_id) VALUES (?, ?, ?)",
-        (user_id, guid, folder_id),
+        "INSERT INTO saved_items (user_email, item_guid, folder_id, created_at) "
+        "VALUES (?, ?, ?, datetime('now'))",
+        (user_email, item_guid, folder_id),
     )
 
+def _unsave_item(user_email: str, item_guid: str) -> None:
+    _sql_exec("DELETE FROM saved_items WHERE user_email = ? AND item_guid = ?",
+              (user_email, item_guid))
 
-def _unsave_item(user_id: int, guid: str) -> None:
-    _sql_exec("DELETE FROM saved_items WHERE user_id = ? AND guid = ?", (user_id, guid))
-
-def _list_saved_items(user_id: int, folder_id: int | None = None) -> List[dict]:
+def _list_saved_items(user_email: str, folder_id: int | None = None) -> list[dict]:
     rows = _sql_all(
-        "SELECT id, guid, folder_id, created_at FROM saved_items "
-        "WHERE user_id = ? AND (? IS NULL OR folder_id = ?) "
+        "SELECT item_guid, folder_id, created_at FROM saved_items "
+        "WHERE user_email = ? AND (? IS NULL OR folder_id = ?) "
         "ORDER BY datetime(created_at) DESC",
-        (user_id, folder_id, folder_id),
+        (user_email, folder_id, folder_id),
     )
-
-    items = db.list_items(limit=20000)  # existing helper
+    items = db.list_items(limit=20000)
     by_guid = {str(e.get("guid") or ""): e for e in items if e.get("guid")}
-    by_link = {str(e.get("link") or ""): e for e in items if e.get("link")}
-
-    out: List[dict] = []
+    out = []
     for r in rows:
-        g = str(r.get("guid") or "")
-        e = by_guid.get(g) or by_link.get(g)
-        if not e:
-            e = {"title": "(item unavailable)", "link": "", "published_at": "", "guid": g, "source": ""}
+        g = str(r["item_guid"])
+        e = by_guid.get(g) or {}
         folder_name = None
         if r.get("folder_id"):
             f = _sql_one("SELECT name FROM folders WHERE id = ?", (r["folder_id"],))
             folder_name = f["name"] if f else None
-
         out.append({
-            "guid": e.get("guid") or g,
-            "title": e.get("title", ""),
+            "guid": g,
+            "title": e.get("title", "(item unavailable)"),
             "link": e.get("link", ""),
             "published_at": e.get("published_at", ""),
             "source": e.get("source", ""),
             "folder": folder_name,
         })
     return out
+
 
 # ---------------------------------------------------------------------------
 # Auth tables + helpers
@@ -410,7 +399,6 @@ def _ensure_users_tables():
         CREATE UNIQUE INDEX IF NOT EXISTS idx_u_tags_uniqueness
         ON user_item_tags(user_email, item_guid, IFNULL(site_id,-1), IFNULL(org_control_id,-1))
     """)
-
 
 
 def _get_user_by_email(email: str) -> Optional[dict]:
@@ -704,6 +692,87 @@ def select_org_page(request: Request):
     html.append("</ul>")
     return HTMLResponse("".join(html))
 
+# --- /saved page (list saved items, optional folder filter) ---
+@app.get("/saved")
+def saved_page(request: Request, folder_id: int | None = Query(default=None)):
+    user_email = current_user_email(request)
+
+    folders = _sql_all("""
+      SELECT f.id, f.name,
+             (SELECT COUNT(*) FROM saved_items si
+              WHERE si.user_email = f.user_email AND si.folder_id = f.id) AS count
+      FROM folders f
+      WHERE f.user_email = ?
+      ORDER BY LOWER(f.name)
+    """, (user_email,))
+
+    rows = _sql_all("""
+      SELECT si.item_guid, si.folder_id, si.created_at, f.name AS folder
+      FROM saved_items si
+      LEFT JOIN folders f ON f.id = si.folder_id
+      WHERE si.user_email = ? AND (? IS NULL OR si.folder_id = ?)
+      ORDER BY datetime(si.created_at) DESC
+    """, (user_email, folder_id, folder_id))
+
+    items = []
+    by_guid = {str(e.get("guid") or ""): e for e in db.list_items(limit=20000) if e.get("guid")}
+    for r in rows:
+        e = by_guid.get(str(r["item_guid"])) or {}
+        items.append({
+            "guid": r["item_guid"],
+            "title": e.get("title") or "(item unavailable)",
+            "link": e.get("link") or "",
+            "published_at": e.get("published_at") or "",
+            "folder": r.get("folder") or None,
+        })
+
+    active_folder_name = None
+    if folder_id is not None:
+        row = _sql_one("SELECT name FROM folders WHERE id = ? AND user_email = ?", (folder_id, user_email))
+        active_folder_name = row["name"] if row else None
+
+    return templates.TemplateResponse("saved.html", {
+        "request": request,
+        "items": items,
+        "folders": folders,
+        "active_folder": folder_id,
+        "active_folder_name": active_folder_name,
+    })
+
+
+
+# --- Create a folder (form POST from the sidebar) ---
+@app.post("/folders/new")
+async def folders_new(request: Request, name: str = Form(...)):
+    user_email = current_user_email(request)
+    name = (name or "").strip()
+    if not name:
+        return RedirectResponse("/saved?error=Folder%20name%20required", status_code=303)
+
+    try:
+        _sql_exec(
+            "INSERT INTO folders (user_email, name, created_at) VALUES (?, ?, datetime('now'))",
+            (user_email, name)
+        )
+    except Exception:
+        # If unique per-user constraint exists, ignore dup nicely
+        return RedirectResponse("/saved?error=Folder%20already%20exists", status_code=303)
+
+    return RedirectResponse("/saved", status_code=303)
+
+
+# --- Remove a saved item (called by saved.html JS) ---
+@app.delete("/api/unsave")
+def api_unsave(request: Request, guid: str = Query(...)):
+    user_email = current_user_email(request)
+    guid = (guid or "").strip()
+    if not guid:
+        raise HTTPException(400, "guid required")
+
+    _sql_exec("DELETE FROM saved_items WHERE user_email = ? AND item_guid = ?", (user_email, guid))
+    return {"ok": True}
+
+
 # --- folders ---
 # ---------- FOLDERS ----------
 @app.get("/api/folders")
@@ -745,13 +814,15 @@ async def api_create_folder(request: Request):
     return JSONResponse(dict(row))
 
 # ---------- SAVE / UNSAVE ITEMS ----------
+# FIXED: POST /api/items/save
 @app.post("/api/items/save")
 async def api_save_item(request: Request):
-    user = current_user_email(request)
+    user_email = current_user_email(request)
     data = await request.json()
-    guid = (data.get("guid") or "").strip()
+    item_guid = (data.get("guid") or "").strip()
     folder_id = data.get("folder_id")
-    if not guid:
+
+    if not item_guid:
         return JSONResponse({"detail": "guid required"}, status_code=400)
     try:
         folder_id = int(folder_id) if folder_id not in (None, "", "null") else None
@@ -761,61 +832,55 @@ async def api_save_item(request: Request):
     db = DB(os.getenv("DB_PATH", "ofgem.db"))
     now = datetime.now(timezone.utc).isoformat()
     with db._conn() as conn:
+        # folder must belong to this user (schema: folders.user_email)
         if folder_id is not None:
-            cur = conn.execute("SELECT 1 FROM folders WHERE id=? AND user_email=?", (folder_id, user))
+            cur = conn.execute(
+                "SELECT 1 FROM folders WHERE id = ? AND user_email = ?",
+                (folder_id, user_email),
+            )
             if cur.fetchone() is None:
                 return JSONResponse({"detail": "Folder not found"}, status_code=404)
-        # upsert-like semantics
+
+        # upsert by (user_email, item_guid)
         conn.execute(
             """
-            INSERT INTO saved_items (user_id, guid, folder_id, created_at)
-            VALUES (
-                (SELECT rowid FROM users WHERE email=?), ?, ?, ?
-            )
-            ON CONFLICT(user_id, guid) DO UPDATE SET folder_id=excluded.folder_id
+            INSERT INTO saved_items (user_email, item_guid, folder_id, created_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(user_email, item_guid)
+            DO UPDATE SET folder_id = excluded.folder_id
             """,
-            (user, guid, folder_id, now),
+            (user_email, item_guid, folder_id, now),
         )
         conn.commit()
     return JSONResponse({"ok": True})
 
-@app.delete("/api/items/save")
-async def api_unsave_item(request: Request):
-    user = current_user_email(request)
-    data = await request.json()
-    guid = (data.get("guid") or "").strip()
-    if not guid:
-        return JSONResponse({"detail": "guid required"}, status_code=400)
-    db = DB(os.getenv("DB_PATH", "ofgem.db"))
-    with db._conn() as conn:
-        conn.execute(
-            """
-            DELETE FROM saved_items
-            WHERE user_id=(SELECT rowid FROM users WHERE email=?) AND guid=?
-            """,
-            (user, guid),
-        )
-        conn.commit()
-    return JSONResponse({"ok": True})
 
 # --- tag / untag ---
-@app.post("/feed/tag")
-def api_tag_item(
-    request: Request,
-    item_guid: str = Form(...),
-    org_id: int = Form(...),
-    site_id: int | None = Form(None),
-    org_control_id: int | None = Form(None),
-):
+def _tag_item_to_site_or_control(
+    user_email: str, item_guid: str, org_id: int, site_id: int | None, org_control_id: int | None
+) -> None:
+    if not item_guid or not org_id:
+        raise HTTPException(400, "Missing guid or org")
     if not site_id and not org_control_id:
-        return JSONResponse({"detail": "Provide site_id or org_control_id"}, status_code=400)
-    db = DB(os.getenv("DB_PATH", "ofgem.db"))
-    user = current_user_email(request)
-    if site_id:
-        db.tag_item_site(user, item_guid, org_id, site_id)
-    if org_control_id:
-        db.tag_item_control(user, item_guid, org_id, org_control_id)
-    return {"ok": True}
+        raise HTTPException(400, "Provide site_id or org_control_id")
+
+    # prevent duplicates (the table has UNIQUE index already, this is for friendlier errors)
+    existing = _sql_one(
+        """SELECT 1 FROM user_item_tags
+           WHERE user_email=? AND item_guid=? AND org_id=?
+             AND IFNULL(site_id,-1)=IFNULL(?, -1)
+             AND IFNULL(org_control_id,-1)=IFNULL(?, -1)""",
+        (user_email, item_guid, org_id, site_id, org_control_id),
+    )
+    if existing:
+        raise HTTPException(409, "Already tagged")
+
+    _sql_exec(
+        "INSERT INTO user_item_tags (user_email, item_guid, org_id, site_id, org_control_id, created_at) "
+        "VALUES (?, ?, ?, ?, ?, datetime('now'))",
+        (user_email, item_guid, org_id, site_id, org_control_id),
+    )
+
 
 @app.delete("/api/items/tag")
 async def api_untag_item(request: Request):
@@ -894,6 +959,377 @@ def create_org(request: Request, name: str = Form(...)):
 
     db.create_org(name, user=current_user)
     return RedirectResponse(url="/orgs", status_code=303)
+
+# --- Organisation & Site overview pages --------------------------------------
+from fastapi import Path
+from fastapi.responses import HTMLResponse
+
+def _sql_all_safe(q, params=()):
+    try:
+        return _sql_all(q, params)
+    except Exception:
+        return []
+
+def _sql_one_safe(q, params=()):
+    try:
+        return _sql_one(q, params)
+    except Exception:
+        return None
+
+def _org_basic(org_id: int):
+    # Expected columns (adjust to your schema):
+    # orgs: id, name, phone, email, head_office_address, website
+    row = _sql_one_safe("""
+        SELECT id, name,
+               COALESCE(phone,'') AS phone,
+               COALESCE(email,'') AS email,
+               COALESCE(head_office_address,'') AS head_office_address,
+               COALESCE(website,'') AS website
+        FROM orgs WHERE id = ?
+    """, (org_id,))
+    return row or {"id": org_id, "name": f"Organisation {org_id}",
+                   "phone": "", "email": "", "head_office_address": "", "website": ""}
+
+def _org_sites(org_id: int):
+    # sites: id, org_id, name, address, phone, email
+    return _sql_all_safe("""
+        SELECT id, name,
+               COALESCE(address,'') AS address,
+               COALESCE(phone,'') AS phone,
+               COALESCE(email,'') AS email
+        FROM sites WHERE org_id = ?
+        ORDER BY LOWER(name)
+    """, (org_id,))
+
+def _org_personnel(org_id: int):
+    # org_members: id, org_id, name, role, email, is_key_personnel(INT 0/1), is_ultimate_risk_owner(INT 0/1)
+    rows = _sql_all_safe("""
+        SELECT id, name, COALESCE(role,'') AS role, COALESCE(email,'') AS email,
+               COALESCE(is_key_personnel,0) AS is_key_personnel,
+               COALESCE(is_ultimate_risk_owner,0) AS is_ultimate_risk_owner
+        FROM org_members
+        WHERE org_id = ?
+        ORDER BY is_ultimate_risk_owner DESC, is_key_personnel DESC, LOWER(name)
+    """, (org_id,))
+    uro = next((r for r in rows if int(r.get("is_ultimate_risk_owner", 0)) == 1), None)
+    keys = [r for r in rows if int(r.get("is_key_personnel", 0)) == 1 or r is uro]
+    return keys, uro
+
+def _org_counts(org_id: int):
+    # org_controls(id, org_id, ...)
+    c_org = _sql_one_safe("SELECT COUNT(*) AS n FROM org_controls WHERE org_id = ?", (org_id,)) or {"n": 0}
+    # org_risks(id, org_id, status, ...)
+    r_org = _sql_one_safe("SELECT COUNT(*) AS n FROM org_risks WHERE org_id = ?", (org_id,)) or {"n": 0}
+    # site counts
+    c_site = _sql_one_safe("""
+        SELECT COUNT(*) AS n FROM site_controls sc
+        JOIN sites s ON s.id = sc.site_id
+        WHERE s.org_id = ?
+    """, (org_id,)) or {"n": 0}
+    r_site = _sql_one_safe("""
+        SELECT COUNT(*) AS n FROM site_risks sr
+        JOIN sites s ON s.id = sr.site_id
+        WHERE s.org_id = ?
+    """, (org_id,)) or {"n": 0}
+    return {
+        "org_controls": c_org["n"],
+        "org_risks": r_org["n"],
+        "site_controls": c_site["n"],
+        "site_risks": r_site["n"],
+    }
+
+from fastapi import Form
+from fastapi.responses import HTMLResponse, RedirectResponse
+
+def _org_name(org_id:int):
+    return (_sql_one("SELECT id,name FROM orgs WHERE id=?", (org_id,)) or {"id":org_id,"name":f"Organisation {org_id}"})
+
+@app.get("/orgs/{org_id}/members", response_class=HTMLResponse)
+def org_members_page(request: Request, org_id: int):
+    org = _org_name(org_id)
+    rows = _sql_all("""
+        SELECT id, name, COALESCE(role,'') AS role, COALESCE(email,'') AS email,
+               COALESCE(is_key_personnel,0) AS is_key_personnel,
+               COALESCE(is_ultimate_risk_owner,0) AS is_ultimate_risk_owner
+        FROM org_members
+        WHERE org_id=?
+        ORDER BY is_ultimate_risk_owner DESC, is_key_personnel DESC, LOWER(name)
+    """, (org_id,))
+    return templates.TemplateResponse("org_members.html", {
+        "request": request,
+        "org": org,
+        "org_id": org_id,
+        "members": rows,
+    })
+
+@app.post("/orgs/{org_id}/members/new")
+def org_member_create(
+    request: Request,
+    org_id: int,
+    name: str = Form(...),
+    role: str = Form(""),
+    email: str = Form(""),
+    is_key_personnel: int = Form(0),
+    is_ultimate_risk_owner: int = Form(0),
+):
+    _sql_exec("""
+        INSERT INTO org_members (org_id, name, role, email, is_key_personnel, is_ultimate_risk_owner)
+        VALUES (?,?,?,?,?,?)
+    """, (org_id, name.strip(), role.strip(), email.strip(), int(bool(is_key_personnel)), int(bool(is_ultimate_risk_owner))))
+    return RedirectResponse(url=f"/orgs/{org_id}/members", status_code=302)
+
+@app.post("/orgs/{org_id}/members/{member_id}/update")
+def org_member_update(
+    request: Request,
+    org_id: int, member_id: int,
+    name: str = Form(...),
+    role: str = Form(""),
+    email: str = Form("")
+):
+    _sql_exec("""
+        UPDATE org_members SET name=?, role=?, email=? WHERE id=? AND org_id=?
+    """, (name.strip(), role.strip(), email.strip(), member_id, org_id))
+    return RedirectResponse(url=f"/orgs/{org_id}/members", status_code=302)
+
+@app.post("/orgs/{org_id}/members/{member_id}/toggle")
+def org_member_toggle(request: Request, org_id: int, member_id: int, field: str = Form(...)):
+    if field not in ("is_key_personnel","is_ultimate_risk_owner"):
+        raise HTTPException(400, "Invalid field")
+    _sql_exec(f"""
+        UPDATE org_members
+        SET {field} = CASE COALESCE({field},0) WHEN 1 THEN 0 ELSE 1 END
+        WHERE id=? AND org_id=?
+    """, (member_id, org_id))
+    return RedirectResponse(url=f"/orgs/{org_id}/members", status_code=302)
+
+@app.post("/orgs/{org_id}/members/{member_id}/delete")
+def org_member_delete(request: Request, org_id: int, member_id: int):
+    _sql_exec("DELETE FROM org_members WHERE id=? AND org_id=?", (member_id, org_id))
+    return RedirectResponse(url=f"/orgs/{org_id}/members", status_code=302)
+
+
+from fastapi import Form
+
+def _site_columns():
+    rows = _sql_all("PRAGMA table_info(sites)")
+    # returns set like {'id','org_id','name','address','phone','email','code','city',...}
+    return {r["name"] for r in rows} if rows else set()
+
+@app.get("/orgs/{org_id}/sites/{site_id}/edit", response_class=HTMLResponse)
+def site_edit_form(request: Request, org_id: int, site_id: int):
+    site = _sql_one("SELECT * FROM sites WHERE id=? AND org_id=?", (site_id, org_id))
+    if not site:
+        raise HTTPException(404, "Site not found")
+    org  = _sql_one("SELECT id, name FROM orgs WHERE id=?", (org_id,)) or {"id": org_id, "name": f"Organisation {org_id}"}
+
+    cols = _site_columns()
+    # flags for the template to only show fields that exist
+    field_flags = {
+        "code": "code" in cols,
+        "city": "city" in cols,
+        "address": "address" in cols,
+        "phone": "phone" in cols,
+        "email": "email" in cols,
+    }
+
+    return templates.TemplateResponse("site_edit.html", {
+        "request": request,
+        "org": org,
+        "site": site,
+        "org_id": org_id,
+        "site_id": site_id,
+        "fields": field_flags,
+    })
+
+@app.post("/orgs/{org_id}/sites/{site_id}/edit", response_class=HTMLResponse)
+def site_edit_save(
+    request: Request,
+    org_id: int,
+    site_id: int,
+    # Form fields (all optional; we only update those present + existing in DB)
+    name: str = Form(None),
+    code: str = Form(None),
+    city: str = Form(None),
+    address: str = Form(None),
+    phone: str = Form(None),
+    email: str = Form(None),
+):
+    # ensure site exists and belongs to org
+    site = _sql_one("SELECT id FROM sites WHERE id=? AND org_id=?", (site_id, org_id))
+    if not site:
+        raise HTTPException(404, "Site not found")
+
+    cols = _site_columns()
+
+    # collect desired updates, but only keep keys that actually exist in the table
+    updates = {}
+    if name is not None:    updates["name"] = name
+    if code is not None:    updates["code"] = code
+    if city is not None:    updates["city"] = city
+    if address is not None: updates["address"] = address
+    if phone is not None:   updates["phone"] = phone
+    if email is not None:   updates["email"] = email
+
+    # intersect with real columns to avoid "no such column" errors
+    updates = {k: v for k, v in updates.items() if k in cols}
+
+    if updates:
+        set_sql = ", ".join([f"{k}=?" for k in updates.keys()])
+        params = list(updates.values()) + [site_id]
+        _sql_exec(f"UPDATE sites SET {set_sql} WHERE id=?", tuple(params))
+
+    # optional: touch updated_at if present
+    if "updated_at" in cols:
+        _sql_exec("UPDATE sites SET updated_at=datetime('now') WHERE id=?", (site_id,))
+
+    # After save, redirect back to site page (or org overview)
+    return RedirectResponse(url=f"/orgs/{org_id}/sites/{site_id}", status_code=302)
+
+
+def _site_basic(site_id: int):
+    # sites: id, org_id, name, address, phone, email
+    return _sql_one_safe("""
+        SELECT s.id, s.org_id, s.name,
+               COALESCE(s.address,'') AS address,
+               COALESCE(s.phone,'') AS phone,
+               COALESCE(s.email,'') AS email
+        FROM sites s WHERE s.id = ?
+    """, (site_id,)) or {"id": site_id, "org_id": None, "name": f"Site {site_id}",
+                         "address": "", "phone": "", "email": ""}
+
+def _site_personnel(site_id: int):
+    # site_members: id, site_id, name, role, email, is_key_personnel
+    return _sql_all_safe("""
+        SELECT id, name, COALESCE(role,'') AS role, COALESCE(email,'') AS email,
+               COALESCE(is_key_personnel,0) AS is_key_personnel
+        FROM site_members
+        WHERE site_id = ?
+        ORDER BY is_key_personnel DESC, LOWER(name)
+    """, (site_id,))
+
+def _site_counts(site_id: int):
+    c = _sql_one_safe("SELECT COUNT(*) AS n FROM site_controls WHERE site_id = ?", (site_id,)) or {"n": 0}
+    r = _sql_one_safe("SELECT COUNT(*) AS n FROM site_risks WHERE site_id = ?", (site_id,)) or {"n": 0}
+    return {"controls": c["n"], "risks": r["n"]}
+
+@app.get("/orgs/{org_id}", response_class=HTMLResponse)
+def org_overview_page(request: Request, org_id: int = Path(...)):
+    org = _org_basic(org_id)
+    sites = _org_sites(org_id)
+    key_people, uro = _org_personnel(org_id)
+    counts = _org_counts(org_id)
+    return templates.TemplateResponse("org_overview.html", {
+        "request": request,
+        "org": org,
+        "sites": sites,
+        "key_people": key_people,
+        "uro": uro,
+        "counts": counts,
+        # Useful links used by the template
+        "org_id": org_id,
+    })
+
+@app.get("/orgs/{org_id}/sites/{site_id}", response_class=HTMLResponse)
+def site_overview_page(request: Request, org_id: int = Path(...), site_id: int = Path(...)):
+    site = _site_basic(site_id)
+    # guard mismatch (wrong org in url)
+    if site and site.get("org_id") not in (None, org_id):
+        raise HTTPException(404, "Site not in organisation")
+    people = _site_personnel(site_id)
+    counts = _site_counts(site_id)
+    # breadcrumb org name (fallback to id)
+    org = _org_basic(org_id)
+    return templates.TemplateResponse("site_overview.html", {
+        "request": request,
+        "org": org,
+        "site": site,
+        "people": people,
+        "counts": counts,
+        "org_id": org_id,
+        "site_id": site_id,
+    })
+@app.get("/orgs/{org_id}/org-risks", response_class=HTMLResponse)
+def org_risks_page(
+    request: Request,
+    org_id: int,
+    status: str | None = Query(None),
+    severity: str | None = Query(None),
+    category: str | None = Query(None),
+    page: int = Query(1, ge=1),
+    per_page: int = Query(25, ge=1, le=200)
+):
+    db = DB(os.getenv("DB_PATH", "ofgem.db"))
+
+    # 1️⃣  Basic organisation details
+    org = _sql_one("""
+        SELECT id, name, head_office_address, phone, email
+        FROM orgs WHERE id = ?
+    """, (org_id,)) or {"id": org_id, "name": f"Organisation {org_id}"}
+
+    # 2️⃣  Build filtering WHERE clause
+    filters = ["org_id = ?"]
+    params = [org_id]
+    if status:
+        filters.append("LOWER(status) = LOWER(?)")
+        params.append(status)
+    if severity:
+        filters.append("LOWER(severity) = LOWER(?)")
+        params.append(severity)
+    if category:
+        filters.append("LOWER(category) = LOWER(?)")
+        params.append(category)
+    where_clause = "WHERE " + " AND ".join(filters)
+
+    # 3️⃣  Count total
+    total_row = _sql_one(f"SELECT COUNT(*) AS n FROM org_risks {where_clause}", tuple(params))
+    total = total_row["n"] if total_row else 0
+
+    # 4️⃣  Pagination
+    offset = (page - 1) * per_page
+
+    # 5️⃣  Query actual risks
+    risks = _sql_all(f"""
+        SELECT id, code, title, status, severity, category,
+               owner_name, owner_email, updated_at, created_at
+        FROM org_risks
+        {where_clause}
+        ORDER BY created_at DESC
+        LIMIT ? OFFSET ?
+    """, tuple(params + [per_page, offset]))
+
+    # 6️⃣  Attach control counts
+    for r in risks:
+        row = _sql_one("SELECT COUNT(*) AS n FROM org_controls_risks WHERE org_risk_id = ?", (r["id"],))
+        r["controls_count"] = row["n"] if row else 0
+
+    # 7️⃣  Pagination helpers for template
+    total_pages = max(1, (total + per_page - 1) // per_page)
+    page_numbers = list(range(max(1, page - 2), min(total_pages, page + 2) + 1))
+
+    # 8️⃣  Drop-down filter choices (optional static lists)
+    status_choices = ["Open", "In progress", "Mitigated", "Closed"]
+    severity_choices = ["Low", "Medium", "High", "Severe"]
+    category_choices = sorted({r.get("category") for r in risks if r.get("category")})
+
+    # 9️⃣  Return the template with all context
+    return templates.TemplateResponse("org_risks.html", {
+        "request": request,
+        "org": org,
+        "org_id": org_id,
+        "risks": risks,
+        "status_choices": status_choices,
+        "severity_choices": severity_choices,
+        "category_choices": category_choices,
+        "active": {
+            "status": status,
+            "severity": severity,
+            "category": category,
+        },
+        "page": page,
+        "total_pages": total_pages,
+        "page_numbers": page_numbers,
+    })
+
 
 # --- Add a new site ---------------------------------------------------------
 @app.post("/orgs/{org_id}/sites/new")
@@ -1505,48 +1941,68 @@ class SaveIn(BaseModel):
     folder_id: int | None = None
 
 # HTML form to create a folder from /saved sidebar
-@app.post("/folders/new")
-def folders_new(request: Request, name: str = Form(...)):
-    uid = require_user(request)
-    try:
-        _create_folder(uid, name)
-        return RedirectResponse(url="/saved", status_code=302)
-    except HTTPException as e:
-        folders = _list_folders(uid)
-        items = _list_saved_items(uid, folder_id=None)
-        return render(request, "saved.html", {
-            "folders": folders,
-            "items": items,
-            "active_folder": None,
-            "error": e.detail,
-        })
+# Make sure you have:
+# from fastapi import Form, HTTPException, Query, Body
+# from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 
-# Save / Unsave
+# Pydantic model for /api/save
+class SaveIn(BaseModel):
+    guid: str
+    folder_id: int | None = None
+
+# --- Create folder (form POST from saved.html sidebar) ---
+@app.post("/folders/new")
+async def folders_new(request: Request, name: str = Form(...)):
+    user_email = require_user(request)  # must be an email string
+    try:
+        _create_folder(user_email, name)  # helper must use folders.user_email
+        return RedirectResponse(url="/saved", status_code=303)
+    except HTTPException as e:
+        folders = _list_folders(user_email)             # uses user_email
+        items = _list_saved_items(user_email, None)     # uses user_email + item_guid
+        return render(
+            request,
+            "saved.html",
+            {
+                "folders": folders,
+                "items": items,
+                "active_folder": None,
+                "error": e.detail,
+            },
+        )
+
+# --- Save (called from summaries.html) ---
 @app.post("/api/save")
 def api_save(request: Request, payload: SaveIn):
-    uid = require_user(request)
-    _save_item(uid, payload.guid, payload.folder_id)
+    user_email = require_user(request)
+    _save_item(user_email, payload.guid, payload.folder_id)  # must use (user_email, item_guid)
     return {"ok": True}
 
+# --- Unsave (called from saved.html JS: DELETE /api/unsave?guid=...) ---
 @app.api_route("/api/unsave", methods=["DELETE", "POST"])
 def api_unsave(request: Request, guid: str | None = Query(None), payload: Dict[str, Any] | None = Body(None)):
-    uid = require_user(request)
+    user_email = require_user(request)
     if not guid and payload and "guid" in payload:
         guid = str(payload["guid"])
     if not guid:
         raise HTTPException(400, "Missing guid")
-    _unsave_item(uid, guid)
+    _unsave_item(user_email, guid)  # must delete by (user_email, item_guid)
     return {"ok": True}
 
+# --- Saved page (lists saved items; optional ?folder_id=) ---
 @app.get("/saved", response_class=HTMLResponse)
-def saved_page(request: Request, folder_id: int | None = None):
-    uid = require_user(request)
-    folders = _list_folders(uid)
-    items = _list_saved_items(uid, folder_id=folder_id)
+def saved_page(request: Request, folder_id: int | None = Query(default=None)):
+    user_email = require_user(request)
+
+    folders = _list_folders(user_email)
+
+    items = _list_saved_items(user_email, folder_id=folder_id)
+    # saved.html expects each item dict to include: guid, link, title, published_at, folder (name)
 
     active_folder_name = None
     if folder_id is not None:
-        row = _sql_one("SELECT name FROM folders WHERE id = ? AND user_id = ?", (folder_id, uid))
+        # FIXED: use user_email (NOT user_id)
+        row = _sql_one("SELECT name FROM folders WHERE id = ? AND user_email = ?", (folder_id, user_email))
         active_folder_name = row["name"] if row else None
 
     return render(
@@ -1559,6 +2015,7 @@ def saved_page(request: Request, folder_id: int | None = None):
             "active_folder_name": active_folder_name,
         },
     )
+
 # Explicit by ID (already in your code)
 @app.get("/api/orgs/{org_id}/sites")
 def api_org_sites(org_id: int):
@@ -1693,4 +2150,135 @@ async def api_tag_item(request: Request):
             })
 
     return JSONResponse({"ok": True, "tags": tags})
+
+@app.get("/orgs/{org_id}/org-risks", response_class=HTMLResponse)
+def org_risks_page(
+    request: Request,
+    org_id: int,
+    status: str | None = Query(None),
+    severity: str | None = Query(None),
+    category: str | None = Query(None),
+    page: int = Query(1, ge=1),
+    per_page: int = Query(25, ge=1, le=200),
+):
+    db = DB(os.getenv("DB_PATH", "ofgem.db"))
+
+    org = _sql_one("""
+        SELECT id, name, head_office_address, phone, email
+        FROM orgs WHERE id = ?
+    """, (org_id,)) or {"id": org_id, "name": f"Organisation {org_id}"}
+
+    filters, params = ["org_id = ?"], [org_id]
+    if status:
+        filters.append("LOWER(status) = LOWER(?)"); params.append(status)
+    if severity:
+        filters.append("LOWER(severity) = LOWER(?)"); params.append(severity)
+    if category:
+        filters.append("LOWER(category) = LOWER(?)"); params.append(category)
+    where_sql = "WHERE " + " AND ".join(filters)
+
+    total = (_sql_one(f"SELECT COUNT(*) AS n FROM org_risks {where_sql}", tuple(params)) or {"n": 0})["n"]
+    offset = (page - 1) * per_page
+
+    risks = _sql_all(f"""
+        SELECT id, code, title, status, severity, category,
+               owner_name, owner_email, created_at, updated_at
+        FROM org_risks
+        {where_sql}
+        ORDER BY COALESCE(updated_at, created_at) DESC
+        LIMIT ? OFFSET ?
+    """, tuple(params + [per_page, offset]))
+
+    # attach control counts
+    for r in risks:
+        row = _sql_one("SELECT COUNT(*) AS n FROM org_controls_risks WHERE org_risk_id = ?", (r["id"],))
+        r["controls_count"] = (row or {"n": 0})["n"]
+
+    total_pages = max(1, (total + per_page - 1) // per_page)
+    page_numbers = list(range(max(1, page - 2), min(total_pages, page + 2) + 1))
+
+    status_choices   = ["Open", "In progress", "Mitigated", "Closed"]
+    severity_choices = ["Low", "Medium", "High", "Severe"]
+    # collect categories from ALL org risks for this org (not just current page)
+    cats = _sql_all("SELECT DISTINCT category FROM org_risks WHERE org_id = ? AND category IS NOT NULL AND category != '' ORDER BY LOWER(category)", (org_id,))
+    category_choices = [c["category"] for c in cats]
+
+    return templates.TemplateResponse("org_risks.html", {
+        "request": request,
+        "org": org,
+        "org_id": org_id,
+        "risks": risks,
+        "status_choices": status_choices,
+        "severity_choices": severity_choices,
+        "category_choices": category_choices,
+        "active": {"status": status, "severity": severity, "category": category},
+        "page": page, "total_pages": total_pages, "page_numbers": page_numbers,
+    })
+@app.get("/orgs/{org_id}/sites/{site_id}/risks", response_class=HTMLResponse)
+def site_risks_page(
+    request: Request,
+    org_id: int,
+    site_id: int,
+    status: str | None = Query(None),
+    severity: str | None = Query(None),
+    category: str | None = Query(None),
+    page: int = Query(1, ge=1),
+    per_page: int = Query(25, ge=1, le=200),
+):
+    db = DB(os.getenv("DB_PATH", "ofgem.db"))
+
+    org  = _sql_one("SELECT id, name FROM orgs WHERE id = ?", (org_id,)) or {"id": org_id, "name": f"Organisation {org_id}"}
+    site = _sql_one("SELECT id, org_id, name, address, phone, email FROM sites WHERE id = ?", (site_id,))
+    if not site or site["org_id"] != org_id:
+        raise HTTPException(404, "Site not found in this organisation")
+
+    filters, params = ["site_id = ?"], [site_id]
+    if status:
+        filters.append("LOWER(status) = LOWER(?)"); params.append(status)
+    if severity:
+        filters.append("LOWER(severity) = LOWER(?)"); params.append(severity)
+    if category:
+        filters.append("LOWER(category) = LOWER(?)"); params.append(category)
+    where_sql = "WHERE " + " AND ".join(filters)
+
+    total = (_sql_one(f"SELECT COUNT(*) AS n FROM site_risks {where_sql}", tuple(params)) or {"n": 0})["n"]
+    offset = (page - 1) * per_page
+
+    risks = _sql_all(f"""
+        SELECT id, code, title, status, severity, category,
+               owner_name, owner_email, created_at, updated_at
+        FROM site_risks
+        {where_sql}
+        ORDER BY COALESCE(updated_at, created_at) DESC
+        LIMIT ? OFFSET ?
+    """, tuple(params + [per_page, offset]))
+
+    # control counts at site level
+    for r in risks:
+        row = _sql_one("SELECT COUNT(*) AS n FROM site_controls_risks WHERE site_risk_id = ?", (r["id"],))
+        r["controls_count"] = (row or {"n": 0})["n"]
+
+    total_pages = max(1, (total + per_page - 1) // per_page)
+    page_numbers = list(range(max(1, page - 2), min(total_pages, page + 2) + 1))
+
+    status_choices   = ["Open", "In progress", "Mitigated", "Closed"]
+    severity_choices = ["Low", "Medium", "High", "Severe"]
+    cats = _sql_all("SELECT DISTINCT category FROM site_risks WHERE site_id = ? AND category IS NOT NULL AND category != '' ORDER BY LOWER(category)", (site_id,))
+    category_choices = [c["category"] for c in cats]
+
+    return templates.TemplateResponse("site_risks.html", {  # create if you don't have it yet
+        "request": request,
+        "org": org,
+        "site": site,
+        "org_id": org_id,
+        "site_id": site_id,
+        "risks": risks,
+        "status_choices": status_choices,
+        "severity_choices": severity_choices,
+        "category_choices": category_choices,
+        "active": {"status": status, "severity": severity, "category": category},
+        "page": page, "total_pages": total_pages, "page_numbers": page_numbers,
+    })
+
+
 

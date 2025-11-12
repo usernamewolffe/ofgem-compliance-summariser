@@ -1,0 +1,96 @@
+{% extends "base.html" %}
+{% block title %}{{ org.name }} — Members{% endblock %}
+
+{% block content %}
+<div class="mx-auto max-w-5xl px-4 sm:px-6 lg:px-8 py-4 space-y-6">
+
+  <nav class="text-xs text-gray-500">
+    <a class="hover:underline" href="/orgs/{{ org_id }}">{{ org.name }}</a> / <span>Members</span>
+  </nav>
+
+  <header class="flex items-center justify-between">
+    <h1 class="text-xl font-semibold">Key personnel & risk owner</h1>
+    <a class="px-3 py-1.5 text-sm border rounded-md hover:bg-gray-50" href="/orgs/{{ org_id }}">Back to overview</a>
+  </header>
+
+  <!-- Add new member -->
+  <section class="rounded-xl border border-gray-100 bg-white p-4">
+    <h2 class="text-base font-semibold mb-2">Add member</h2>
+    <form method="post" action="/orgs/{{ org_id }}/members/new" class="grid gap-3 md:grid-cols-2">
+      <label class="text-sm">Name
+        <input name="name" required class="mt-1 w-full rounded-md border border-gray-300 px-3 py-2 text-sm">
+      </label>
+      <label class="text-sm">Role
+        <input name="role" class="mt-1 w-full rounded-md border border-gray-300 px-3 py-2 text-sm">
+      </label>
+      <label class="text-sm md:col-span-2">Email
+        <input name="email" type="email" class="mt-1 w-full rounded-md border border-gray-300 px-3 py-2 text-sm">
+      </label>
+      <div class="flex items-center gap-4 md:col-span-2">
+        <label class="text-sm flex items-center gap-2">
+          <input type="checkbox" name="is_key_personnel" value="1"> Key personnel
+        </label>
+        <label class="text-sm flex items-center gap-2">
+          <input type="checkbox" name="is_ultimate_risk_owner" value="1"> Ultimate risk owner
+        </label>
+      </div>
+      <div class="md:col-span-2 flex justify-end">
+        <button class="px-3 py-1.5 text-sm border rounded-md bg-emerald-600 text-white hover:bg-emerald-700" type="submit">
+          Add member
+        </button>
+      </div>
+    </form>
+  </section>
+
+  <!-- Existing members -->
+  <section class="rounded-xl border border-gray-100 bg-white p-4">
+    <h2 class="text-base font-semibold mb-3">Members ({{ members|length }})</h2>
+    {% if not members %}
+      <p class="text-sm text-gray-500">No members yet.</p>
+    {% else %}
+      <ul class="grid gap-3">
+        {% for m in members %}
+        <li class="p-3 rounded-lg border">
+          <!-- Update form (name/role/email) -->
+          <form method="post" action="/orgs/{{ org_id }}/members/{{ m.id }}/update" class="grid gap-3 md:grid-cols-3">
+            <label class="text-sm">Name
+              <input name="name" value="{{ m.name }}" class="mt-1 w-full rounded-md border border-gray-300 px-3 py-2 text-sm">
+            </label>
+            <label class="text-sm">Role
+              <input name="role" value="{{ m.role }}" class="mt-1 w-full rounded-md border border-gray-300 px-3 py-2 text-sm">
+            </label>
+            <label class="text-sm">Email
+              <input name="email" type="email" value="{{ m.email }}" class="mt-1 w-full rounded-md border border-gray-300 px-3 py-2 text-sm">
+            </label>
+            <div class="md:col-span-3 flex justify-end">
+              <button class="px-3 py-1.5 text-sm border rounded-md hover:bg-gray-50" type="submit">Save</button>
+            </div>
+          </form>
+
+          <!-- Toggle buttons (separate small forms; NOT nested) -->
+          <div class="mt-2 flex flex-wrap items-center gap-2">
+            <form method="post" action="/orgs/{{ org_id }}/members/{{ m.id }}/toggle">
+              <input type="hidden" name="field" value="is_key_personnel">
+              <button class="px-2 py-1 text-xs border rounded-md {{ 'bg-emerald-600 text-white' if m.is_key_personnel else '' }}" type="submit">
+                Key personnel {{ '✓' if m.is_key_personnel else '' }}
+              </button>
+            </form>
+            <form method="post" action="/orgs/{{ org_id }}/members/{{ m.id }}/toggle">
+              <input type="hidden" name="field" value="is_ultimate_risk_owner">
+              <button class="px-2 py-1 text-xs border rounded-md {{ 'bg-emerald-600 text-white' if m.is_ultimate_risk_owner else '' }}" type="submit">
+                Ultimate risk owner {{ '✓' if m.is_ultimate_risk_owner else '' }}
+              </button>
+            </form>
+
+            <form method="post" action="/orgs/{{ org_id }}/members/{{ m.id }}/delete" onsubmit="return confirm('Delete this member?')" class="ml-auto">
+              <button class="px-3 py-1.5 text-sm border rounded-md hover:bg-red-50" type="submit">Delete</button>
+            </form>
+          </div>
+        </li>
+        {% endfor %}
+      </ul>
+    {% endif %}
+  </section>
+
+</div>
+{% endblock %}

@@ -3,6 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <title>{% block title %}Compliance Summaries{% endblock %}</title>
+    <link rel="stylesheet" href="/static/css/tailwind.css">
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
     :root {
@@ -181,6 +182,15 @@
         </nav>
 
       <div class="spacer"></div>
+
+        <!-- somewhere in your header/nav -->
+<nav class="flex gap-3 text-sm">
+  <a href="/summaries">Summaries</a>
+  <a href="/orgs/1">Organisation</a> <!-- replace 1 with current org -->
+  <a href="/saved">Saved</a>
+</nav>
+
+
 
       <div class="header-actions">
         {% if uid %}
