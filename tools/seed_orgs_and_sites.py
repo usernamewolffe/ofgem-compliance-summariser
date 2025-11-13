@@ -58,7 +58,7 @@ def main():
 
     print("\n✅ Created controls:")
     for c in db.list_all_controls_for_org(org_id):
-        site_label = c["site_name"] or "Org-wide"
+        site_label = c["site_name"] or "Corporate"
         print(f"  - [{site_label}] {c['code']} — {c['title']}")
 
     print("\nDone. You can now view:")

@@ -20,7 +20,7 @@
     <h3 style="margin:0 0 .5rem;">Sites</h3>
     {% if sites and sites|length %}
       <nav class="stack">
-        <a href="/orgs/{{ org_id }}/controls" class="tag" style="display:inline-block;">Org-wide</a>
+        <a href="/orgs/{{ org_id }}/controls" class="tag" style="display:inline-block;">Corporate</a>
         {% for s in sites %}
           <a href="/orgs/{{ org_id }}/controls?site={{ s.id }}" class="tag" style="display:inline-block;">
             {{ s.name }}
@@ -89,7 +89,7 @@
 </div>
 
 <!-- Add Site dialog -->
-<dialog id="dlgAddSite" style="border:none; border-radius:12px; padding:0; max-width:520px; width:92%;">
+<dialog id="dlgAddSite" style="border:none; border-radius:12px; padding:0; max-width:960px; width:96%;">
   <form method="post" action="/orgs/{{ org_id }}/sites/new"
         style="padding:1rem 1rem 1.2rem; background:#fff; border:1px solid var(--line); border-radius:12px;">
     <h3 style="margin:.25rem 0 1rem;">Add site</h3>
@@ -112,7 +112,7 @@
 </dialog>
 
 <!-- Add Control dialog -->
-<dialog id="dlgAddControl" style="border:none; border-radius:12px; padding:0; max-width:680px; width:96%;">
+<dialog id="dlgAddControl" style="border:none; border-radius:12px; padding:0; max-width:960px; width:96%;">
   <form method="post" action="/orgs/{{ org_id }}/controls/new"
         style="padding:1rem 1rem 1.2rem; background:#fff; border:1px solid var(--line); border-radius:12px;">
     <h3 style="margin:.25rem 0 1rem;">Add control</h3>
@@ -120,7 +120,7 @@
     <div class="stack">
       <label>Site
         <select name="site_id">
-          <option value="">(Org-wide)</option>
+          <option value="">(Corporate)</option>
           {% for s in sites %}
             <option value="{{ s.id }}">{{ s.name }}</option>
           {% endfor %}

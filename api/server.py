@@ -1569,7 +1569,7 @@ def org_controls_page(
     grouped: Dict[str, List[dict]] = {}
     for c in controls:
         group = c.get("site_name") or (
-            current_site["name"] if current_site else "Org-wide"
+            current_site["name"] if current_site else "Corporate"
         )
         grouped.setdefault(group, []).append(c)
 
@@ -1650,94 +1650,93 @@ def org_control_create(
 def org_risks_page(
     request: Request,
     org_id: int,
-    status: Optional[str] = Query(None),
-    severity: Optional[str] = Query(None),
-    category: Optional[str] = Query(None),
+    status: str | None = Query(None),
+    severity: str | None = Query(None),
+    category: str | None = Query(None),
     page: int = Query(1, ge=1),
     per_page: int = Query(25, ge=1, le=200),
 ):
-    org = _sql_one(
-        """
+    db = DB(os.getenv("DB_PATH", "ofgem.db"))
+
+    org = _sql_one("""
         SELECT id, name, head_office_address, phone, email
         FROM orgs WHERE id = ?
-        """,
-        (org_id,),
-    ) or {"id": org_id, "name": f"Organisation {org_id}"}
+    """, (org_id,)) or {"id": org_id, "name": f"Organisation {org_id}"}
 
     filters, params = ["org_id = ?"], [org_id]
     if status:
-        filters.append("LOWER(status) = LOWER(?)")
-        params.append(status)
+        filters.append("LOWER(status) = LOWER(?)"); params.append(status)
     if severity:
-        filters.append("LOWER(severity) = LOWER(?)")
-        params.append(severity)
+        filters.append("LOWER(severity) = LOWER(?)"); params.append(severity)
     if category:
-        filters.append("LOWER(category) = LOWER(?)")
-        params.append(category)
+        filters.append("LOWER(category) = LOWER(?)"); params.append(category)
     where_sql = "WHERE " + " AND ".join(filters)
 
-    total = (
-        _sql_one(
-            f"SELECT COUNT(*) AS n FROM org_risks {where_sql}", tuple(params)
-        )
-        or {"n": 0}
-    )["n"]
+    total = (_sql_one(f"SELECT COUNT(*) AS n FROM org_risks {where_sql}", tuple(params)) or {"n": 0})["n"]
     offset = (page - 1) * per_page
 
-    risks = _sql_all(
-        f"""
-        SELECT id, code, title, status, severity, category,
+    # pull description as well so the modal can show it
+    risks = _sql_all(f"""
+        SELECT id, code, title, description, status, severity, category,
                owner_name, owner_email, created_at, updated_at
         FROM org_risks
         {where_sql}
         ORDER BY COALESCE(updated_at, created_at) DESC
         LIMIT ? OFFSET ?
-        """,
-        tuple(params + [per_page, offset]),
-    )
+    """, tuple(params + [per_page, offset]))
 
+    # attach control counts
     for r in risks:
-        row = _sql_one(
-            "SELECT COUNT(*) AS n FROM org_controls_risks WHERE org_risk_id = ?",
-            (r["id"],),
-        )
+        row = _sql_one("SELECT COUNT(*) AS n FROM org_controls_risks WHERE org_risk_id = ?", (r["id"],))
         r["controls_count"] = (row or {"n": 0})["n"]
 
     total_pages = max(1, (total + per_page - 1) // per_page)
     page_numbers = list(range(max(1, page - 2), min(total_pages, page + 2) + 1))
 
-    cats = _sql_all(
-        """
-        SELECT DISTINCT category FROM org_risks
+    status_choices   = ["Open", "In progress", "Mitigated", "Closed"]
+    severity_choices = ["Low", "Medium", "High", "Severe"]
+    cats = _sql_all("""
+        SELECT DISTINCT category
+        FROM org_risks
         WHERE org_id = ? AND category IS NOT NULL AND category != ''
         ORDER BY LOWER(category)
-        """,
-        (org_id,),
-    )
+    """, (org_id,))
     category_choices = [c["category"] for c in cats]
 
-    status_choices = ["Open", "In progress", "Mitigated", "Closed"]
-    severity_choices = ["Low", "Medium", "High", "Severe"]
+    # 👇 NEW: all org-level controls, for the mapping dropdown in the modal
+    org_controls = db.list_org_controls(org_id)
 
-    return render(
-        request,
-        "org_risks.html",
-        {
-            "org": org,
-            "org_id": org_id,
-            "risks": risks,
-            "status_choices": status_choices,
-            "severity_choices": severity_choices,
-            "category_choices": category_choices,
-            "active": {
-                "status": status,
-                "severity": severity,
-                "category": category,
-            },
-            "page": page,
-            "total_pages": total_pages,
-            "page_numbers": page_numbers,
-        },
+    return templates.TemplateResponse("org_risks.html", {
+        "request": request,
+        "org": org,
+        "org_id": org_id,
+        "risks": risks,
+        "status_choices": status_choices,
+        "severity_choices": severity_choices,
+        "category_choices": category_choices,
+        "active": {"status": status, "severity": severity, "category": category},
+        "page": page, "total_pages": total_pages, "page_numbers": page_numbers,
+        "controls": org_controls,   # 👈 important
+    })
+
+@app.post("/orgs/{org_id}/org-risks/link-control")
+def org_risk_link_control(
+    request: Request,
+    org_id: int,
+    risk_id: int = Form(...),
+    control_id: int = Form(...),
+):
+    # adjust columns if your join table is slightly different
+    _sql_exec(
+        """
+        INSERT OR IGNORE INTO org_controls_risks (org_control_id, org_risk_id)
+        VALUES (?, ?)
+        """,
+        (control_id, risk_id),
+    )
+    return RedirectResponse(
+        url=f"/orgs/{org_id}/org-risks",
+        status_code=303,
     )
 
 

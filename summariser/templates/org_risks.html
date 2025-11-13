@@ -7,10 +7,10 @@
   <!-- Sidebar -->
   <aside class="rounded-xl border border-gray-100 p-4 bg-white">
     <nav class="text-xs text-gray-500 mb-2">
-      <a href="/orgs/{{ org_id }}" class="hover:underline">{{ org.name }}</a> / <span>Org-wide risks</span>
+      <a href="/orgs/{{ org_id }}" class="hover:underline">{{ org.name }}</a> / <span>Corporate risks</span>
     </nav>
 
-    <h2 class="text-lg font-semibold">Org-wide risks</h2>
+    <h2 class="text-lg font-semibold">Corporate risks</h2>
     <p class="text-sm text-gray-600 mt-1">
       Risks that apply at the organisation level (not tied to a specific site).
     </p>
@@ -21,7 +21,7 @@
       <a href="/orgs/{{ org_id }}/sites" class="px-3 py-2 border rounded-md hover:bg-gray-50">All sites</a>
     </div>
 
-    <!-- Filters (optional: only shown if you pass choices in context) -->
+    <!-- Filters -->
     <form method="get" class="mt-4 space-y-2 text-sm">
       {% if status_choices %}
         <label class="block">
@@ -80,7 +80,7 @@
 
     {% if not risks or risks|length == 0 %}
       <div class="rounded-xl border border-gray-100 bg-white p-4 text-sm text-gray-600">
-        No org-wide risks yet. Click <em>+ New risk</em> to add one.
+        No Corporate risks yet. Click <em>+ New risk</em> to add one.
       </div>
     {% else %}
       <div class="rounded-xl border border-gray-100 bg-white overflow-hidden">
@@ -101,13 +101,13 @@
               <tr class="border-t">
                 <td class="align-top px-4 py-3">
                   <div class="font-medium">
-                    <a class="hover:underline" href="/orgs/{{ org_id }}/org-risks/{{ r.id }}">{{ r.code or ('R-' ~ r.id) }}</a>
-                    — {{ r.title or '(untitled)' }}
+                    {{ r.code or ('R-' ~ r.id) }} — {{ r.title or '(untitled)' }}
                   </div>
                   {% if r.category %}
                     <div class="text-xs text-gray-500 mt-0.5">{{ r.category }}</div>
                   {% endif %}
                 </td>
+
                 <td class="align-top px-4 py-3">
                   {% set st = (r.status or 'Open') %}
                   <span class="inline-block px-2 py-0.5 rounded-full text-xs
@@ -118,6 +118,7 @@
                     {{ st }}
                   </span>
                 </td>
+
                 <td class="align-top px-4 py-3">
                   {% set sev = (r.severity or '') %}
                   <span class="inline-block px-2 py-0.5 rounded-full text-xs
@@ -128,16 +129,20 @@
                     {{ sev or '—' }}
                   </span>
                 </td>
+
                 <td class="align-top px-4 py-3">
                   {% if r.owner_name %}
                     <div>{{ r.owner_name }}</div>
                     {% if r.owner_email %}
-                      <div class="text-xs"><a class="hover:underline" href="mailto:{{ r.owner_email }}">{{ r.owner_email }}</a></div>
+                      <div class="text-xs">
+                        <a class="hover:underline" href="mailto:{{ r.owner_email }}">{{ r.owner_email }}</a>
+                      </div>
                     {% endif %}
                   {% else %}
                     <span class="text-gray-400">Unassigned</span>
                   {% endif %}
                 </td>
+
                 <td class="align-top px-4 py-3">
                   {% if r.controls and r.controls|length %}
                     <ul class="space-y-0.5">
@@ -158,12 +163,28 @@
                     <span class="text-gray-400">None</span>
                   {% endif %}
                 </td>
+
                 <td class="align-top px-4 py-3 text-gray-600">
                   {{ r.updated_at or r.created_at or '—' }}
                 </td>
+
                 <td class="align-top px-4 py-3 text-right whitespace-nowrap">
-                  <a class="px-3 py-1.5 border rounded-md hover:bg-gray-50"
-                     href="/orgs/{{ org_id }}/org-risks/{{ r.id }}">Open</a>
+                  <button
+                    type="button"
+                    class="px-3 py-1.5 border rounded-md hover:bg-gray-50 js-open-risk"
+                    data-risk-id="{{ r.id }}"
+                    data-risk-code="{{ r.code or ('R-' ~ r.id) }}"
+                    data-risk-title="{{ r.title or '(untitled)' }}"
+                    data-risk-status="{{ r.status or 'Open' }}"
+                    data-risk-severity="{{ r.severity or '' }}"
+                    data-risk-category="{{ r.category or '' }}"
+                    data-risk-owner="{{ r.owner_name or '' }}"
+                    data-risk-owner-email="{{ r.owner_email or '' }}"
+                    data-risk-description="{{ (r.description or '')|e }}"
+                    data-risk-updated="{{ r.updated_at or r.created_at or '' }}"
+                  >
+                    Open
+                  </button>
                 </td>
               </tr>
             {% endfor %}
@@ -171,7 +192,6 @@
         </table>
       </div>
 
-      <!-- Pagination (optional) -->
       {% if total_pages and total_pages > 1 %}
         <nav class="flex gap-2 justify-end text-sm mt-3">
           {% for n in page_numbers %}
@@ -189,4 +209,136 @@
     {% endif %}
   </main>
 </div>
+
+<!-- Risk detail + map control dialog -->
+<dialog id="dlgRiskDetail"
+        style="border:none; border-radius:16px; padding:0; max-width:960px; width:96%;">
+  <form method="post"
+        action="/orgs/{{ org_id }}/org-risks/link-control"
+        style="padding:1.25rem 1.5rem 1.5rem; background:#fff; border:1px solid var(--line); border-radius:16px; max-height:90vh; overflow:auto;">
+
+    <input type="hidden" name="risk_id" id="riskIdField">
+
+    <div class="flex items-start justify-between mb-4 gap-4">
+      <div>
+        <div class="text-xs text-gray-500 mb-1" id="riskCodeBadge"></div>
+        <h2 class="text-lg font-semibold text-gray-900" id="riskTitleHeading">Risk title</h2>
+        <div class="text-xs text-gray-500 mt-1" id="riskMetaLine"></div>
+      </div>
+      <div class="flex flex-col gap-2 items-end text-sm">
+        <span id="riskStatusBadge"></span>
+        <span id="riskSeverityBadge"></span>
+      </div>
+    </div>
+
+    <div class="mb-4">
+      <h3 class="text-sm font-semibold text-gray-900 mb-1">Description</h3>
+      <p class="text-sm text-gray-700 whitespace-pre-wrap" id="riskDescriptionText">
+        –
+      </p>
+    </div>
+
+    <hr class="my-4 border-gray-200">
+
+    <div class="mb-3">
+      <h3 class="text-sm font-semibold text-gray-900 mb-1">Link a control to this risk</h3>
+      {% if controls %}
+        <p class="text-xs text-gray-500 mb-3">
+          Pick an organisation or site control and click <strong>Link control</strong>.
+        </p>
+        <div class="grid gap-3 md:grid-cols-[minmax(0,2fr)_minmax(0,1fr)] items-end">
+          <label class="text-sm">
+            <span class="block text-xs font-medium text-gray-700 mb-1">Control</span>
+            <select name="control_id" required
+                    class="w-full rounded-md border border-gray-300 px-2.5 py-1.5 text-sm">
+              <option value="">Select a control…</option>
+              {% for c in controls %}
+                <option value="{{ c.id }}">
+                  {{ c.code or '—' }} — {{ c.title }}{% if c.site_name %} ({{ c.site_name }}){% endif %}
+                </option>
+              {% endfor %}
+            </select>
+          </label>
+
+          <button type="submit"
+                  class="px-3 py-2 text-sm rounded-md bg-emerald-600 text-white hover:bg-emerald-700">
+            Link control
+          </button>
+        </div>
+      {% else %}
+        <p class="text-xs text-gray-500">
+          No controls available yet. Create organisation or site controls first, then you can map them here.
+        </p>
+      {% endif %}
+    </div>
+
+    <div class="mt-6 flex justify-end gap-2">
+      <button type="button" class="btn small" id="btnRiskDetailCancel">Close</button>
+    </div>
+  </form>
+</dialog>
+
+<script>
+  (function () {
+    const dlg = document.getElementById('dlgRiskDetail');
+    if (!dlg) return;
+
+    const cancelBtn   = document.getElementById('btnRiskDetailCancel');
+    const riskIdField = document.getElementById('riskIdField');
+
+    const codeEl   = document.getElementById('riskCodeBadge');
+    const titleEl  = document.getElementById('riskTitleHeading');
+    const metaEl   = document.getElementById('riskMetaLine');
+    const descEl   = document.getElementById('riskDescriptionText');
+    const statusEl = document.getElementById('riskStatusBadge');
+    const sevEl    = document.getElementById('riskSeverityBadge');
+
+    function makeBadge(el, label, cls) {
+      if (!label) {
+        el.textContent = '';
+        el.removeAttribute('class');
+        return;
+      }
+      el.textContent = label;
+      el.className =
+        'inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium border ' + cls;
+    }
+
+    document.querySelectorAll('.js-open-risk').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        const d = btn.dataset;
+
+        riskIdField.value = d.riskId || '';
+
+        const codeBits = [];
+        if (d.riskCode) codeBits.push(d.riskCode);
+        if (d.riskCategory) codeBits.push(d.riskCategory);
+        codeEl.textContent = codeBits.join(' — ');
+
+        titleEl.textContent = d.riskTitle || 'Risk';
+
+        const ownerBits = [];
+        if (d.riskOwner) ownerBits.push(d.riskOwner);
+        if (d.riskOwnerEmail) ownerBits.push('(' + d.riskOwnerEmail + ')');
+        const updated = d.riskUpdated || '';
+        metaEl.textContent = [ownerBits.join(' '), updated].filter(Boolean).join(' • ');
+
+        descEl.textContent = d.riskDescription || 'No description recorded yet.';
+
+        makeBadge(statusEl, d.riskStatus || 'Open',
+          'border-amber-200 bg-amber-50 text-amber-800');
+        makeBadge(sevEl, d.riskSeverity || '',
+          'border-rose-200 bg-rose-50 text-rose-800');
+
+        dlg.showModal();
+      });
+    });
+
+    if (cancelBtn) {
+      cancelBtn.addEventListener('click', function () {
+        dlg.close();
+      });
+    }
+  })();
+</script>
 {% endblock %}

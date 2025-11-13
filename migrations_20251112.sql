@@ -186,7 +186,7 @@ CREATE TABLE IF NOT EXISTS user_item_tags (
   user_email     TEXT NOT NULL,
   item_guid      TEXT NOT NULL,
   org_id         INTEGER NOT NULL,
-  site_id        INTEGER,       -- nullable for org-wide tag
+  site_id        INTEGER,       -- nullable for Corporate tag
   org_control_id INTEGER,       -- nullable
   created_at     TEXT DEFAULT (datetime('now'))
 );

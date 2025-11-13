@@ -165,7 +165,7 @@ class DB:
                 CREATE TABLE IF NOT EXISTS org_controls (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     org_id INTEGER NOT NULL,
-                    site_id INTEGER,                 -- NULL for org-wide
+                    site_id INTEGER,                 -- NULL for Corporate
                     code TEXT,
                     title TEXT NOT NULL,
                     description TEXT,

@@ -271,7 +271,7 @@
         <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <label class="text-sm">Site (optional)
             <select name="site_id" id="tagSiteSelect" class="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 text-sm">
-              <option value="">Org-wide</option>
+              <option value="">Corporate</option>
             </select>
           </label>
           <label class="text-sm">Control (optional)
@@ -445,7 +445,7 @@
 
       const siteSel = document.getElementById('tagSiteSelect');
       const ctrlSel = document.getElementById('tagControlSelect');
-      siteSel.innerHTML = '<option value="">Org-wide</option>';
+      siteSel.innerHTML = '<option value="">Corporate</option>';
       ctrlSel.innerHTML = '<option value="">— Choose control —</option>';
 
       try {

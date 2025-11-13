@@ -1,26 +1,156 @@
-{% extends "base.html" %}
-{% block title %}New Control{% endblock %}
-{% block content %}
-  <h1>New Control</h1>
-  <form action="/orgs/{{ org_id }}/controls/new" method="post" style="display:grid;gap:.5rem;max-width:560px;">
-    <label>Title <input name="title" required /></label>
-    <label>Code <input name="code" /></label>
-    <label>Description <textarea name="description" rows="4"></textarea></label>
-    <label>Owner email <input type="email" name="owner_email" /></label>
-    <label>Tags (CSV or ["json","array"]) <input name="tags" /></label>
-    <label>Status
-      <select name="status">
-        <option>Active</option>
-        <option>Paused</option>
-        <option>Retired</option>
-      </select>
-    </label>
-    <label>Risk <input name="risk" /></label>
-    <label>Review frequency (days) <input type="number" name="review_frequency_days" /></label>
-    <label>Next review at (YYYY-MM-DD) <input name="next_review_at" /></label>
-    {% if site_id %}
-      <input type="hidden" name="site_id" value="{{ site_id }}">
-    {% endif %}
-    <button class="btn primary" type="submit">Create control</button>
+<div class="p-4 sm:p-6">
+  <h2 class="text-lg font-semibold text-gray-900 mb-4">Add control</h2>
+
+  <form method="post" class="space-y-5">
+    <!-- Row 1: Site / Code / Title -->
+    <div class="grid gap-4 md:grid-cols-3">
+      <div class="md:col-span-1">
+        <label class="block text-sm font-medium text-gray-700 mb-1">
+          Site
+        </label>
+        <select
+          name="site_id"
+          class="block w-full rounded-md border border-gray-300 px-2.5 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
+        >
+          <option value="">Corporate (org-wide)</option>
+          {% if site_id %}
+            <option value="{{ site_id }}" selected>Selected site</option>
+          {% endif %}
+        </select>
+      </div>
+
+      <div>
+        <label class="block text-sm font-medium text-gray-700 mb-1">
+          Code <span class="text-gray-400 text-xs">(optional)</span>
+        </label>
+        <input
+          type="text"
+          name="code"
+          placeholder="e.g. IR-01"
+          class="block w-full rounded-md border border-gray-300 px-2.5 py-2 text-sm placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
+        />
+      </div>
+
+      <div class="md:col-span-1">
+        <label class="block text-sm font-medium text-gray-700 mb-1">
+          Title
+        </label>
+        <input
+          type="text"
+          name="title"
+          required
+          placeholder="Short description of the control..."
+          class="block w-full rounded-md border border-gray-300 px-2.5 py-2 text-sm placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
+        />
+      </div>
+    </div>
+
+    <!-- Row 2: Description / Owner email -->
+    <div class="grid gap-4 md:grid-cols-2">
+      <div>
+        <label class="block text-sm font-medium text-gray-700 mb-1">
+          Description
+        </label>
+        <textarea
+          name="description"
+          rows="3"
+          placeholder="e.g. Incident response plan reviewed annually and tested via exercise."
+          class="block w-full rounded-md border border-gray-300 px-2.5 py-2 text-sm placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
+        ></textarea>
+      </div>
+
+      <div>
+        <label class="block text-sm font-medium text-gray-700 mb-1">
+          Owner email <span class="text-gray-400 text-xs">(optional)</span>
+        </label>
+        <input
+          type="email"
+          name="owner_email"
+          placeholder="owner@example.com"
+          class="block w-full rounded-md border border-gray-300 px-2.5 py-2 text-sm placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
+        />
+
+        <label class="block text-sm font-medium text-gray-700 mt-4 mb-1">
+          Tags <span class="text-gray-400 text-xs">(comma-separated)</span>
+        </label>
+        <input
+          type="text"
+          name="tags"
+          placeholder="Incident, Cyber, CAF-D1"
+          class="block w-full rounded-md border border-gray-300 px-2.5 py-2 text-sm placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
+        />
+      </div>
+    </div>
+
+    <!-- Row 3: Risk text -->
+    <div>
+      <label class="block text-sm font-medium text-gray-700 mb-1">
+        Risk <span class="text-gray-400 text-xs">(optional)</span>
+      </label>
+      <input
+        type="text"
+        name="risk"
+        placeholder="e.g. High / Medium / Low or short description"
+        class="block w-full rounded-md border border-gray-300 px-2.5 py-2 text-sm placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
+      />
+    </div>
+
+    <!-- Row 4: Status / Review frequency / Next review -->
+    <div class="grid gap-4 md:grid-cols-3">
+      <div>
+        <label class="block text-sm font-medium text-gray-700 mb-1">
+          Status
+        </label>
+        <select
+          name="status"
+          class="block w-full rounded-md border border-gray-300 px-2.5 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
+        >
+          <option value="Active" selected>Active</option>
+          <option value="Planned">Planned</option>
+          <option value="Retired">Retired</option>
+        </select>
+      </div>
+
+      <div>
+        <label class="block text-sm font-medium text-gray-700 mb-1">
+          Review frequency (days)
+        </label>
+        <input
+          type="number"
+          name="review_frequency_days"
+          min="0"
+          placeholder="e.g. 180"
+          class="block w-full rounded-md border border-gray-300 px-2.5 py-2 text-sm placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
+        />
+      </div>
+
+      <div>
+        <label class="block text-sm font-medium text-gray-700 mb-1">
+          Next review at (date)
+        </label>
+        <input
+          type="date"
+          name="next_review_at"
+          class="block w-full rounded-md border border-gray-300 px-2.5 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
+        />
+      </div>
+    </div>
+
+    <!-- Actions -->
+    <div class="mt-6 flex justify-end gap-3">
+      <button
+        type="button"
+        onclick="window.close && window.close()"
+        class="px-4 py-2 rounded-md border border-gray-300 text-sm text-gray-700 hover:bg-gray-50"
+      >
+        Cancel
+      </button>
+      <button
+        type="submit"
+        class="px-4 py-2 rounded-md bg-emerald-600 text-sm font-medium text-white hover:bg-emerald-700"
+      >
+        Create control
+      </button>
+    </div>
   </form>
-{% endblock %}
+</div>
