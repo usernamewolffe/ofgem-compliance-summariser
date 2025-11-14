@@ -1003,6 +1003,109 @@ def org_overview_page(request: Request, org_id: int):
         },
     )
 
+# ---------------------------------------------------------------------------
+# Organisation members / personnel
+# ---------------------------------------------------------------------------
+@app.get("/orgs/{org_id}/members", response_class=HTMLResponse)
+def org_members_page(request: Request, org_id: int):
+    """
+    List & manage organisation-level personnel (org_members).
+    """
+    org = _org_basic(org_id)
+
+    members = _sql_all(
+        """
+        SELECT
+          id,
+          name,
+          COALESCE(role, '')  AS role,
+          COALESCE(email, '') AS email,
+          COALESCE(is_key_personnel, 0)       AS is_key_personnel,
+          COALESCE(is_ultimate_risk_owner, 0) AS is_ultimate_risk_owner
+        FROM org_members
+        WHERE org_id = ?
+        ORDER BY
+          is_ultimate_risk_owner DESC,
+          is_key_personnel       DESC,
+          LOWER(name)
+        """,
+        (org_id,),
+    )
+
+    key_people = [m for m in members if int(m["is_key_personnel"]) == 1 or int(m["is_ultimate_risk_owner"]) == 1]
+    others = [m for m in members if m not in key_people]
+
+    return render(
+        request,
+        "org_members.html",
+        {
+            "org": org,
+            "org_id": org_id,
+            "key_people": key_people,
+            "other_members": others,
+        },
+    )
+
+
+@app.post("/orgs/{org_id}/members/new")
+def org_member_create(
+    request: Request,
+    org_id: int,
+    name: str = Form(...),
+    role: str = Form(""),
+    email: str = Form(""),
+    is_key_personnel: str | None = Form(None),
+    is_ultimate_risk_owner: str | None = Form(None),
+):
+    """
+    Create a new org_members row.
+    """
+    name = (name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Name is required")
+
+    role = (role or "").strip()
+    email = (email or "").strip()
+    key_flag = 1 if is_key_personnel else 0
+    owner_flag = 1 if is_ultimate_risk_owner else 0
+
+    # If this person is set as ultimate owner, clear existing owner first
+    if owner_flag == 1:
+        _sql_exec(
+            "UPDATE org_members SET is_ultimate_risk_owner = 0 WHERE org_id = ?",
+            (org_id,),
+        )
+
+    _sql_exec(
+        """
+        INSERT INTO org_members
+          (org_id, name, role, email, is_key_personnel, is_ultimate_risk_owner)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (org_id, name, role, email, key_flag, owner_flag),
+    )
+
+    return RedirectResponse(url=f"/orgs/{org_id}/members", status_code=303)
+
+
+@app.post("/orgs/{org_id}/members/{member_id}/delete")
+def org_member_delete(request: Request, org_id: int, member_id: int):
+    """
+    Delete a member from org_members.
+    """
+    row = _sql_one(
+        "SELECT id FROM org_members WHERE id = ? AND org_id = ?",
+        (member_id, org_id),
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Member not found in this organisation")
+
+    _sql_exec(
+        "DELETE FROM org_members WHERE id = ? AND org_id = ?",
+        (member_id, org_id),
+    )
+
+    return RedirectResponse(url=f"/orgs/{org_id}/members", status_code=303)
 
 @app.get("/orgs/{org_id}/sites", response_class=HTMLResponse)
 def list_sites_page(request: Request, org_id: int):
