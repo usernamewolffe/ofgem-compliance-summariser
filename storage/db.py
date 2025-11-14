@@ -226,14 +226,143 @@ class DB:
                 """
                 CREATE VIEW v_item_org_control_links AS
                 SELECT l.item_guid,
-                       oc.id AS org_control_id,
+                       oc.id            AS org_control_id,
                        MAX(l.relevance) AS relevance
                 FROM item_control_links l
-                JOIN org_control_map m ON m.control_id = l.control_id
-                JOIN org_controls     oc ON oc.id = m.org_control_id
+                         JOIN org_control_map m ON m.control_id = l.control_id
+                         JOIN org_controls oc ON oc.id = m.org_control_id
                 GROUP BY l.item_guid, oc.id
                 """
             )
+
+            # ------------------- org risks -------------------
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS org_risks
+                (
+                    id
+                    INTEGER
+                    PRIMARY
+                    KEY
+                    AUTOINCREMENT,
+                    org_id
+                    INTEGER
+                    NOT
+                    NULL,
+                    site_id
+                    INTEGER, -- NULL = corporate / org-wide
+                    code
+                    TEXT,
+                    title
+                    TEXT
+                    NOT
+                    NULL,
+                    description
+                    TEXT,
+                    owner_name
+                    TEXT,
+                    owner_email
+                    TEXT,
+                    status
+                    TEXT,
+                    severity
+                    TEXT,
+                    category
+                    TEXT,
+                    created_at
+                    TEXT
+                    NOT
+                    NULL,
+                    updated_at
+                    TEXT
+                    NOT
+                    NULL,
+                    FOREIGN
+                    KEY
+                (
+                    org_id
+                ) REFERENCES orgs
+                (
+                    id
+                ) ON DELETE CASCADE,
+                    FOREIGN KEY
+                (
+                    site_id
+                ) REFERENCES sites
+                (
+                    id
+                )
+                  ON DELETE SET NULL
+                    )
+                """
+            )
+
+            # Unique code per org (if code present)
+            cur.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_org_risks_org_code
+                    ON org_risks(org_id, code)
+                    WHERE code IS NOT NULL
+                """
+            )
+
+            # ------------------- org risks <-> sites (many-to-many) -------------------
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS org_risk_sites
+                (
+                    org_risk_id
+                    INTEGER
+                    NOT
+                    NULL,
+                    site_id
+                    INTEGER
+                    NOT
+                    NULL,
+                    PRIMARY
+                    KEY
+                (
+                    org_risk_id,
+                    site_id
+                ),
+                    FOREIGN KEY
+                (
+                    org_risk_id
+                ) REFERENCES org_risks
+                (
+                    id
+                ) ON DELETE CASCADE,
+                    FOREIGN KEY
+                (
+                    site_id
+                ) REFERENCES sites
+                (
+                    id
+                )
+                  ON DELETE CASCADE
+                    )
+                """
+            )
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_org_risk_sites_risk ON org_risk_sites(org_risk_id)"
+            )
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_org_risk_sites_site ON org_risk_sites(site_id)"
+            )
+
+            # Backfill from legacy org_risks.site_id (one site → one link)
+            cur.execute("SELECT id, site_id FROM org_risks WHERE site_id IS NOT NULL")
+            for row in cur.fetchall():
+                rid = int(row[0])
+                sid = int(row[1])
+                cur.execute(
+                    """
+                    INSERT
+                    OR IGNORE INTO org_risk_sites (org_risk_id, site_id)
+                    VALUES (?, ?)
+                    """,
+                    (rid, sid),
+                )
 
             conn.commit()
 
@@ -866,6 +995,8 @@ class DB:
             out.append(d)
         return out
 
+
+
     def list_all_controls_for_org(self, org_id: int) -> List[Dict[str, Any]]:
         """Org-level + per-site in one list, joined with site name."""
         with self._conn() as conn, closing(conn.cursor()) as cur:
@@ -914,3 +1045,518 @@ class DB:
                 (int(org_control_id), int(limit)),
             )
             return [dict(r) for r in cur.fetchall()]
+
+    # --- org risks ---------------------------------------------------------
+    def next_org_risk_code(self, org_id: int) -> str:
+        """Return the next R-XXX code for this org_id (corporate + sites)."""
+        with self._conn() as conn, closing(conn.cursor()) as cur:
+            cur.execute(
+                """
+                SELECT code
+                FROM org_risks
+                WHERE org_id = ?
+                  AND code LIKE 'R-%'
+                ORDER BY code DESC
+                LIMIT 1
+                """,
+                (int(org_id),),
+            )
+            row = cur.fetchone()
+            if not row or not row["code"]:
+                return "R-001"
+
+            try:
+                # assume format R-XXX
+                n = int(row["code"].split("-")[-1])
+            except ValueError:
+                return "R-001"
+
+            return f"R-{n+1:03d}"
+
+
+    def get_org_risk(self, org_id: int, risk_id: int) -> Optional[Dict[str, Any]]:
+        """Fetch a single org-level risk, scoped to an org."""
+        with self._conn() as conn, closing(conn.cursor()) as cur:
+            cur.execute(
+                """
+                SELECT id, org_id, site_id,
+                       code, title, description,
+                       owner_name, owner_email,
+                       status, severity, category,
+                       created_at, updated_at
+                FROM org_risks
+                WHERE id = ? AND org_id = ?
+                """,
+                (int(risk_id), int(org_id)),
+            )
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+    def list_org_risks(
+        self,
+        org_id: int,
+        site_id: Optional[int] = None,
+        status: str | None = None,
+        severity: str | None = None,
+        category: str | None = None,
+        limit: int = 200,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        """List risks for an org with optional filters + simple pagination."""
+        where = ["org_id = ?"]
+        params: list[Any] = [int(org_id)]
+
+        if site_id is not None:
+            if site_id == 0:  # convention: 0 == corporate (no site)
+                where.append("site_id IS NULL")
+            else:
+                where.append("site_id = ?")
+                params.append(int(site_id))
+
+        if status:
+            where.append("status = ?")
+            params.append(status)
+
+        if severity:
+            where.append("severity = ?")
+            params.append(severity)
+
+        if category:
+            where.append("category = ?")
+            params.append(category)
+
+        where_sql = " AND ".join(where)
+
+        with self._conn() as conn, closing(conn.cursor()) as cur:
+            cur.execute(
+                f"""
+                SELECT id, org_id, site_id,
+                       code, title, description,
+                       owner_name, owner_email,
+                       status, severity, category,
+                       created_at, updated_at
+                FROM org_risks
+                WHERE {where_sql}
+                ORDER BY datetime(COALESCE(updated_at, created_at, '1970-01-01T00:00:00Z')) DESC,
+                         id DESC
+                LIMIT ? OFFSET ?
+                """,
+                (*params, int(limit), int(offset)),
+            )
+            rows = cur.fetchall()
+            return [dict(r) for r in rows]
+
+    def count_org_risks(
+        self,
+        org_id: int,
+        site_id: Optional[int] = None,
+        status: str | None = None,
+        severity: str | None = None,
+        category: str | None = None,
+    ) -> int:
+        """Count risks for pagination using same filters as list_org_risks."""
+        where = ["org_id = ?"]
+        params: list[Any] = [int(org_id)]
+
+        if site_id is not None:
+            if site_id == 0:
+                where.append("site_id IS NULL")
+            else:
+                where.append("site_id = ?")
+                params.append(int(site_id))
+
+        if status:
+            where.append("status = ?")
+            params.append(status)
+
+        if severity:
+            where.append("severity = ?")
+            params.append(severity)
+
+        if category:
+            where.append("category = ?")
+            params.append(category)
+
+        where_sql = " AND ".join(where)
+
+        with self._conn() as conn, closing(conn.cursor()) as cur:
+            cur.execute(
+                f"SELECT COUNT(*) AS n FROM org_risks WHERE {where_sql}",
+                params,
+            )
+            row = cur.fetchone()
+            return int(row["n"]) if row else 0
+
+    def update_org_risk(
+        self,
+        org_id: int,
+        risk_id: int,
+        *,
+        title: str | None = None,
+        description: str | None = None,
+        owner_name: str | None = None,
+        owner_email: str | None = None,
+        status: str | None = None,
+        severity: str | None = None,
+        category: str | None = None,
+    ) -> bool:
+        """Partial update for an org risk; returns True if a row was updated."""
+        fields = []
+        params: list[Any] = []
+
+        def add(field: str, value: Any | None):
+            if value is not None:
+                fields.append(f"{field} = ?")
+                params.append(value)
+
+        add("title", title)
+        add("description", description)
+        add("owner_name", owner_name)
+        add("owner_email", owner_email)
+        add("status", status)
+        add("severity", severity)
+        add("category", category)
+
+        if not fields:
+            return False
+
+        fields.append("updated_at = ?")
+        from datetime import datetime, timezone
+
+        params.append(datetime.now(timezone.utc).isoformat())
+        params.extend([int(risk_id), int(org_id)])
+
+        with self._conn() as conn, closing(conn.cursor()) as cur:
+            cur.execute(
+                f"""
+                UPDATE org_risks
+                SET {", ".join(fields)}
+                WHERE id = ? AND org_id = ?
+                """,
+                params,
+            )
+            conn.commit()
+            return cur.rowcount > 0
+
+    def delete_org_risk(self, org_id: int, risk_id: int) -> bool:
+        """Delete an org risk (and let FK constraints clean up mappings)."""
+        with self._conn() as conn, closing(conn.cursor()) as cur:
+            cur.execute(
+                "DELETE FROM org_risks WHERE id = ? AND org_id = ?",
+                (int(risk_id), int(org_id)),
+            )
+            conn.commit()
+            return cur.rowcount > 0
+    # --- org risks (org_risks) ---------------------------------------------
+    def get_org_risk(self, org_id: int, risk_id: int) -> Optional[Dict[str, Any]]:
+        """Fetch a single org-level risk, ensuring it belongs to the org."""
+        from contextlib import closing
+
+        with self._conn() as conn, closing(conn.cursor()) as cur:
+            cur.execute(
+                """
+                SELECT id, org_id, site_id, code, title, description,
+                       status, severity, category,
+                       owner_name, owner_email,
+                       created_at, updated_at
+                FROM org_risks
+                WHERE id = ? AND org_id = ?
+                """,
+                (int(risk_id), int(org_id)),
+            )
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+    def list_org_risks(
+        self,
+        org_id: int,
+        site_id: int | None = None,
+        status: str | None = None,
+        severity: str | None = None,
+        category: str | None = None,
+        limit: int = 200,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        """
+        List org_risks for an org.
+
+        site_id semantics:
+          - site_id is None → ignore site filter (all org_risks rows)
+          - site_id == 0   → corporate only (site_id IS NULL)
+          - site_id > 0    → that specific site_id
+        """
+        from contextlib import closing
+
+        clauses = ["org_id = ?"]
+        params: list[Any] = [int(org_id)]
+
+        if site_id is not None:
+            if site_id == 0:
+                clauses.append("site_id IS NULL")
+            else:
+                clauses.append("site_id = ?")
+                params.append(int(site_id))
+
+        if status:
+            clauses.append("LOWER(status) = LOWER(?)")
+            params.append(status)
+        if severity:
+            clauses.append("LOWER(severity) = LOWER(?)")
+            params.append(severity)
+        if category:
+            clauses.append("LOWER(category) = LOWER(?)")
+            params.append(category)
+
+        where_sql = " AND ".join(clauses)
+
+        with self._conn() as conn, closing(conn.cursor()) as cur:
+            cur.execute(
+                f"""
+                SELECT id, org_id, site_id, code, title, description,
+                       status, severity, category,
+                       owner_name, owner_email,
+                       created_at, updated_at
+                FROM org_risks
+                WHERE {where_sql}
+                ORDER BY datetime(COALESCE(updated_at, created_at)) DESC
+                LIMIT ? OFFSET ?
+                """,
+                tuple(params + [int(limit), int(offset)]),
+            )
+            rows = cur.fetchall()
+            return [dict(r) for r in rows]
+
+    # --- org risks ---------------------------------------------------------
+    def next_org_risk_code(self, org_id: int) -> str:
+        """Return the next R-XXX code for this org_id (corporate + sites)."""
+        with self._conn() as conn, closing(conn.cursor()) as cur:
+            cur.execute(
+                """
+                SELECT code
+                FROM org_risks
+                WHERE org_id = ?
+                  AND code LIKE 'R-%'
+                ORDER BY code DESC
+                LIMIT 1
+                """,
+                (int(org_id),),
+            )
+            row = cur.fetchone()
+            if not row or not row["code"]:
+                return "R-001"
+
+            try:
+                n = int(row["code"].split("-")[-1])
+            except ValueError:
+                return "R-001"
+
+            return f"R-{n+1:03d}"
+
+    def get_org_risk(self, org_id: int, risk_id: int) -> Optional[Dict[str, Any]]:
+        """Fetch a single org-level risk, ensuring it belongs to the org."""
+        with self._conn() as conn, closing(conn.cursor()) as cur:
+            cur.execute(
+                """
+                SELECT id, org_id, site_id, code, title, description,
+                       status, severity, category,
+                       owner_name, owner_email,
+                       created_at, updated_at
+                FROM org_risks
+                WHERE id = ? AND org_id = ?
+                """,
+                (int(risk_id), int(org_id)),
+            )
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+    def list_org_risks(
+        self,
+        org_id: int,
+        site_id: int | None = None,
+        status: str | None = None,
+        severity: str | None = None,
+        category: str | None = None,
+        limit: int = 200,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        """
+        List org_risks for an org.
+
+        site_id semantics:
+          - site_id is None → ignore site filter (all org_risks rows)
+          - site_id == 0   → corporate only (site_id IS NULL)
+          - site_id > 0    → that specific site_id
+        """
+        clauses = ["org_id = ?"]
+        params: list[Any] = [int(org_id)]
+
+        if site_id is not None:
+            if site_id == 0:
+                clauses.append("site_id IS NULL")
+            else:
+                clauses.append("site_id = ?")
+                params.append(int(site_id))
+
+        if status:
+            clauses.append("LOWER(status) = LOWER(?)")
+            params.append(status)
+        if severity:
+            clauses.append("LOWER(severity) = LOWER(?)")
+            params.append(severity)
+        if category:
+            clauses.append("LOWER(category) = LOWER(?)")
+            params.append(category)
+
+        where_sql = " AND ".join(clauses)
+
+        with self._conn() as conn, closing(conn.cursor()) as cur:
+            cur.execute(
+                f"""
+                SELECT id, org_id, site_id, code, title, description,
+                       status, severity, category,
+                       owner_name, owner_email,
+                       created_at, updated_at
+                FROM org_risks
+                WHERE {where_sql}
+                ORDER BY datetime(COALESCE(updated_at, created_at)) DESC,
+                         id DESC
+                LIMIT ? OFFSET ?
+                """,
+                tuple(params + [int(limit), int(offset)]),
+            )
+            rows = cur.fetchall()
+            return [dict(r) for r in rows]
+
+    def count_org_risks(
+        self,
+        org_id: int,
+        site_id: int | None = None,
+        status: str | None = None,
+        severity: str | None = None,
+        category: str | None = None,
+    ) -> int:
+        """Count org_risks for pagination using the same filters as list_org_risks."""
+        clauses = ["org_id = ?"]
+        params: list[Any] = [int(org_id)]
+
+        if site_id is not None:
+            if site_id == 0:
+                clauses.append("site_id IS NULL")
+            else:
+                clauses.append("site_id = ?")
+                params.append(int(site_id))
+
+        if status:
+            clauses.append("LOWER(status) = LOWER(?)")
+            params.append(status)
+        if severity:
+            clauses.append("LOWER(severity) = LOWER(?)")
+            params.append(severity)
+        if category:
+            clauses.append("LOWER(category) = LOWER(?)")
+            params.append(category)
+
+        where_sql = " AND ".join(clauses)
+
+        with self._conn() as conn, closing(conn.cursor()) as cur:
+            cur.execute(
+                f"SELECT COUNT(*) AS n FROM org_risks WHERE {where_sql}",
+                tuple(params),
+            )
+            row = cur.fetchone()
+            return int(row["n"] if row else 0)
+
+    def update_org_risk(
+        self,
+        org_id: int,
+        risk_id: int,
+        **fields: Any,
+    ) -> bool:
+        """
+        Update selected columns on an org_risks row.
+        Only allows a safe subset of columns and bumps updated_at.
+        """
+        allowed = {
+            "code",
+            "title",
+            "description",
+            "status",
+            "severity",
+            "category",
+            "owner_name",
+            "owner_email",
+        }
+        payload = {k: v for k, v in fields.items() if k in allowed}
+
+        if not payload:
+            return False
+
+        payload["updated_at"] = datetime.now(timezone.utc).isoformat()
+        set_sql = ", ".join([f"{k} = :{k}" for k in payload.keys()])
+        payload["org_id"] = int(org_id)
+        payload["id"] = int(risk_id)
+
+        with self._conn() as conn, closing(conn.cursor()) as cur:
+            cur.execute(
+                f"""
+                UPDATE org_risks
+                SET {set_sql}
+                WHERE id = :id AND org_id = :org_id
+                """,
+                payload,
+            )
+            conn.commit()
+            return cur.rowcount > 0
+
+    def delete_org_risk(self, org_id: int, risk_id: int) -> bool:
+        """
+        Delete an org_risks row for this org.
+        org_risk_sites has ON DELETE CASCADE on org_risk_id.
+        """
+        with self._conn() as conn, closing(conn.cursor()) as cur:
+            cur.execute(
+                "DELETE FROM org_risks WHERE id = ? AND org_id = ?",
+                (int(risk_id), int(org_id)),
+            )
+            conn.commit()
+            return cur.rowcount > 0
+
+    def list_sites_for_risk(self, org_id: int, risk_id: int) -> list[dict]:
+        """List sites linked to a risk (many-to-many)."""
+        with self._conn() as conn, closing(conn.cursor()) as cur:
+            cur.execute(
+                """
+                SELECT s.id, s.name, s.code, s.location
+                FROM org_risk_sites rs
+                JOIN sites s ON s.id = rs.site_id
+                WHERE rs.org_risk_id = ?
+                  AND s.org_id = ?
+                ORDER BY s.name
+                """,
+                (int(risk_id), int(org_id)),
+            )
+            return [dict(r) for r in cur.fetchall()]
+
+    def set_sites_for_risk(self, org_id: int, risk_id: int, site_ids: list[int]) -> None:
+        """
+        Replace the set of sites linked to this risk.
+        Passing an empty list means 'corporate-only' risk (no sites).
+        """
+        clean_ids = sorted({int(sid) for sid in site_ids if sid})
+        with self._conn() as conn, closing(conn.cursor()) as cur:
+            cur.execute(
+                """
+                DELETE FROM org_risk_sites
+                WHERE org_risk_id = ?
+                """,
+                (int(risk_id),),
+            )
+            if clean_ids:
+                cur.executemany(
+                    """
+                    INSERT OR IGNORE INTO org_risk_sites (org_risk_id, site_id)
+                    VALUES (?, ?)
+                    """,
+                    [(int(risk_id), sid) for sid in clean_ids],
+                )
+            conn.commit()

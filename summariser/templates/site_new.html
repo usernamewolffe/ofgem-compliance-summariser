@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% block title %}New site — {{ org_name or ('Organisation ' ~ org_id) }}{% endblock %}
+
+{% block content %}
+<div class="page-title">
+  <div>
+    <div class="text-xs text-gray-500">
+      <a href="/orgs/{{ org_id }}" class="text-emerald-700 hover:underline">
+        {{ org_name or ('Organisation ' ~ org_id) }}
+      </a>
+      <span class="mx-1 text-gray-400">/</span>
+      <a href="/orgs/{{ org_id }}/controls" class="text-emerald-700 hover:underline">
+        Sites &amp; controls
+      </a>
+      <span class="mx-1 text-gray-400">/</span>
+      <span class="text-gray-600">New site</span>
+    </div>
+    <h1 class="mt-1">
+      Add site
+    </h1>
+  </div>
+</div>
+
+<div class="wrap">
+  <section class="panel max-w-xl">
+    <form method="post" action="/orgs/{{ org_id }}/sites/new" class="space-y-6">
+
+      <!-- Name (required) -->
+      <div>
+        <label class="block text-sm font-medium text-gray-700">
+          Site name <span class="text-red-500">*</span>
+        </label>
+        <input
+          type="text"
+          name="name"
+          required
+          class="mt-1 w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-600"
+          placeholder="e.g. Stoke CCGT, Head Office"
+        >
+        <p class="mt-1 text-xs text-gray-500">
+          This will be shown anywhere this site appears (risks, controls, etc.).
+        </p>
+      </div>
+
+      <!-- Code -->
+      <div>
+        <label class="block text-sm font-medium text-gray-700">
+          Site code
+        </label>
+        <input
+          type="text"
+          name="code"
+          class="mt-1 w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-600"
+          placeholder="Optional short code, e.g. STK-01"
+        >
+      </div>
+
+      <!-- Location (maps to the 'location' form field in create_site) -->
+      <div>
+        <label class="block text-sm font-medium text-gray-700">
+          Location / city
+        </label>
+        <input
+          type="text"
+          name="location"
+          class="mt-1 w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-600"
+          placeholder="e.g. Stoke-on-Trent"
+        >
+        <p class="mt-1 text-xs text-gray-500">
+          Simple free-text field for now. You can capture a fuller address later on the site page.
+        </p>
+      </div>
+
+      <div class="flex justify-between items-center pt-4 border-t border-gray-100">
+        <a href="/orgs/{{ org_id }}/controls" class="btn small">
+          Cancel
+        </a>
+        <button type="submit" class="btn primary small">
+          Create site
+        </button>
+      </div>
+    </form>
+  </section>
+</div>
+{% endblock %}
