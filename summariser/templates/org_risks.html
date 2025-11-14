@@ -254,121 +254,136 @@
 </aside>
 
 <script>
-(function () {
-  var drawer = document.getElementById("riskDrawer");
-  var drawerInner = document.getElementById("riskDrawerInner");
-  var backdrop = document.getElementById("riskDrawerBackdrop");
 
-  if (!drawer || !drawerInner || !backdrop) {
-    return;
-  }
+
+// GLOBAL — must exist before modal tries calling it
+window.handleRiskFormSubmit = function (e, form) {
+  e.preventDefault();
+
+  var formData = new FormData(form);
+
+  fetch(form.action, {
+    method: "POST",
+    body: formData,
+    headers: {
+      "Accept": "application/json",
+      "X-Requested-With": "fetch"
+    }
+  })
+  .then(function (resp) {
+    if (!resp.ok) {
+      alert("Couldn't save this risk.");
+      return null;
+    }
+    return resp.json();
+  })
+  .then(function (data) {
+    if (!data || !data.ok) {
+      alert("Couldn't save this risk.");
+      return;
+    }
+    // Ask the drawer (defined later) to close
+    if (window.closeRiskDrawer) {
+      window.closeRiskDrawer();
+    }
+    window.location.reload();
+  })
+  .catch(function (err) {
+    console.error(err);
+    alert("Error saving risk.");
+  });
+
+  return false; // block natural form submission
+};
+
+(function () {
+  var drawer      = document.getElementById("riskDrawer");
+  var drawerInner = document.getElementById("riskDrawerInner");
+  var backdrop    = document.getElementById("riskDrawerBackdrop");
 
   function openDrawer() {
+    if (!drawer || !backdrop) return;
     backdrop.classList.remove("pointer-events-none");
     backdrop.classList.add("opacity-100");
     drawer.classList.remove("translate-x-full");
   }
 
   function closeDrawer() {
+    if (!drawer || !backdrop || !drawerInner) return;
     drawer.classList.add("translate-x-full");
     backdrop.classList.add("pointer-events-none");
     backdrop.classList.remove("opacity-100");
     drawerInner.innerHTML = "";
   }
 
-  function wireDrawerInteractions() {
-    var closeBtn = drawerInner.querySelector("#riskDrawerClose");
+ window.closeRiskDrawer = closeDrawer;
+
+
+  // ----------------------------------------------------
+  // Close buttons + delete button (delegated)
+  // ----------------------------------------------------
+  document.addEventListener("click", function (e) {
+    // Close buttons (header “Close” + footer “Cancel”)
+    var closeBtn = e.target.closest("[data-risk-drawer-close]");
     if (closeBtn) {
-      closeBtn.onclick = function (e) {
-        e.preventDefault();
-        closeDrawer();
-      };
-    }
-
-    var deleteBtn = drawerInner.querySelector("#riskDrawerDelete");
-    if (deleteBtn) {
-      deleteBtn.onclick = function (e) {
-        e.preventDefault();
-        var url = deleteBtn.getAttribute("data-delete-url");
-        if (!url) {
-          return;
-        }
-        if (!confirm("Delete this risk? This cannot be undone.")) {
-          return;
-        }
-        fetch(url, {
-          method: "POST",
-          headers: {
-            "Accept": "application/json",
-            "X-Requested-With": "fetch"
-          }
-        }).then(function (resp) {
-          if (!resp.ok) {
-            alert("Couldn't delete this risk. Please try again.");
-            return;
-          }
-          return resp.json();
-        }).then(function (data) {
-          if (!data || !data.ok) {
-            alert("Couldn't delete this risk. Please try again.");
-            return;
-          }
-          closeDrawer();
-          window.location.reload();
-        }).catch(function (err) {
-          console.error(err);
-          alert("Error deleting this risk.");
-        });
-      };
-    }
-
-    var form = drawerInner.querySelector("form[data-risk-form]");
-    if (!form) {
+      e.preventDefault();
+      closeDrawer();
       return;
     }
 
-    form.addEventListener("submit", function (e) {
+    // Delete
+    var deleteBtn = e.target.closest("#riskDrawerDelete");
+    if (deleteBtn) {
       e.preventDefault();
-      var formData = new FormData(form);
+      var url = deleteBtn.getAttribute("data-delete-url");
+      if (!url) return;
 
-      fetch(form.action, {
+      if (!confirm("Delete this risk? This cannot be undone.")) {
+        return;
+      }
+
+      fetch(url, {
         method: "POST",
-        body: formData,
         headers: {
           "Accept": "application/json",
           "X-Requested-With": "fetch"
         }
-      }).then(function (resp) {
+      })
+      .then(function (resp) {
         if (!resp.ok) {
-          alert("Couldn't save this risk. Please try again.");
+          alert("Couldn't delete this risk. Please try again.");
           return null;
         }
         return resp.json();
-      }).then(function (data) {
-        if (!data) return;
-        if (!data.ok) {
-          alert("Couldn't save this risk. Please try again.");
+      })
+      .then(function (data) {
+        if (!data || !data.ok) {
+          alert("Couldn't delete this risk. Please try again.");
           return;
         }
         closeDrawer();
         window.location.reload();
-      }).catch(function (err) {
+      })
+      .catch(function (err) {
         console.error(err);
-        alert("Error saving this risk.");
+        alert("Error deleting this risk.");
       });
-    });
-  }
+    }
+  });
 
-  // --- Edit existing risk ---
+  // ----------------------------------------------------
+  // Open existing risk
+  // ----------------------------------------------------
   var openButtons = document.querySelectorAll(".js-open-risk");
   for (var i = 0; i < openButtons.length; i++) {
     openButtons[i].addEventListener("click", function (e) {
       e.preventDefault();
-      var orgId = this.getAttribute("data-org-id");
+      var orgId  = this.getAttribute("data-org-id");
       var riskId = this.getAttribute("data-risk-id");
-      if (!orgId || !riskId) return;
+      if (!orgId || !riskId || !drawerInner) return;
 
-      drawerInner.innerHTML = "<div class='p-4 text-sm text-gray-500'>Loading…</div>";
+      drawerInner.innerHTML =
+        "<div class='p-4 text-sm text-gray-500'>Loading…</div>";
       openDrawer();
 
       fetch("/orgs/" + orgId + "/org-risks/" + riskId + "/modal")
@@ -383,7 +398,6 @@
         .then(function (html) {
           if (!html) return;
           drawerInner.innerHTML = html;
-          wireDrawerInteractions();
         })
         .catch(function (err) {
           console.error(err);
@@ -393,13 +407,15 @@
     });
   }
 
-  // --- New risk (Add risk button) ---
+  // ----------------------------------------------------
+  // New risk
+  // ----------------------------------------------------
   var newButtons = document.querySelectorAll(".js-new-risk");
   for (var j = 0; j < newButtons.length; j++) {
     newButtons[j].addEventListener("click", function (e) {
       e.preventDefault();
       var orgId = this.getAttribute("data-org-id");
-      if (!orgId) return;
+      if (!orgId || !drawerInner) return;
 
       drawerInner.innerHTML =
         "<div class='p-4 text-sm text-gray-500'>Loading form…</div>";
@@ -417,7 +433,6 @@
         .then(function (html) {
           if (!html) return;
           drawerInner.innerHTML = html;
-          wireDrawerInteractions();
         })
         .catch(function (err) {
           console.error(err);
@@ -427,12 +442,15 @@
     });
   }
 
-  // Backdrop click
-  backdrop.addEventListener("click", function () {
-    closeDrawer();
-  });
+  // ----------------------------------------------------
+  // Backdrop + ESC
+  // ----------------------------------------------------
+  if (backdrop) {
+    backdrop.addEventListener("click", function () {
+      closeDrawer();
+    });
+  }
 
-  // Escape key
   document.addEventListener("keydown", function (e) {
     if (e.key === "Escape") {
       closeDrawer();
@@ -440,4 +458,9 @@
   });
 })();
 </script>
+
+
+
+
+
 {% endblock %}

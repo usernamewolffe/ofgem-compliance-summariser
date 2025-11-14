@@ -1798,88 +1798,76 @@ def org_risk_modal(request: Request, org_id: int, risk_id: int):
 
 @app.post("/orgs/{org_id}/org-risks/{risk_id}/update")
 def org_risk_update(
-    request: Request,
     org_id: int,
     risk_id: int,
-    title: str = Form(""),
+    request: Request,
     code: str = Form(""),
-    description: str = Form(""),
-    owner_name: str = Form(""),
-    owner_email: str = Form(""),
+    title: str = Form(""),
     category: str = Form(""),
-    status: str | None = Form(None),
-    severity: str | None = Form(None),
-    control_ids: List[str] = Form(default=[]),
+    status: str = Form("Open"),
+    severity: str = Form(""),
+    owner_id: str = Form(""),
+    description: str = Form(""),
 ):
-    # Make sure the risk exists
-    risk = _sql_one(
-        "SELECT * FROM org_risks WHERE org_id = ? AND id = ?",
-        (org_id, risk_id),
-    )
-    if not risk:
-        raise HTTPException(status_code=404, detail="Risk not found for this organisation")
+    now = datetime.utcnow().isoformat(timespec="seconds")
 
-    # Build update fields (fall back to existing title/code if blank)
-    update_fields: Dict[str, Any] = {
-        "title": title or risk.get("title") or "",
-        "code": code or (risk.get("code") or ""),
-        "description": description,
-        "owner_name": owner_name,
-        "owner_email": owner_email,
-        "category": category,
-    }
-    if status is not None:
-        update_fields["status"] = status
-    if severity is not None:
-        update_fields["severity"] = severity
-
-    set_parts: list[str] = []
-    params: list[Any] = []
-    for col, val in update_fields.items():
-        set_parts.append(f"{col} = ?")
-        params.append(val)
-
-    # Always bump updated_at
-    set_parts.append("updated_at = datetime('now')")
-
-    sql = f"""
-        UPDATE org_risks
-        SET {", ".join(set_parts)}
-        WHERE org_id = ? AND id = ?
-    """
-    params.extend([org_id, risk_id])
-    _sql_exec(sql, tuple(params))
-
-    # Replace control mappings
-    _sql_exec("DELETE FROM org_controls_risks WHERE org_risk_id = ?", (risk_id,))
-    for cid in control_ids or []:
-        try:
-            cid_int = int(cid)
-        except (TypeError, ValueError):
-            continue
-        _sql_exec(
+    # --- Normalise / validate code ---
+    code = (code or "").strip()
+    if code == "":
+        code_db = None
+    else:
+        # Check uniqueness within this org (excluding this risk)
+        existing = _sql_one(
             """
-            INSERT OR IGNORE INTO org_controls_risks (org_risk_id, org_control_id)
-            VALUES (?, ?)
+            SELECT id
+            FROM org_risks
+            WHERE org_id = ? AND code = ? AND id != ?
             """,
-            (risk_id, cid_int),
+            (org_id, code, risk_id),
         )
+        if existing:
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "error": "Another risk for this organisation already uses that code.",
+                },
+                status_code=400,
+            )
+        code_db = code
 
-    accepts = (request.headers.get("accept") or "").lower()
-    is_ajax = "application/json" in accepts or request.headers.get("x-requested-with") == "fetch"
+    # --- Normalise owner ---
+    owner_id = (owner_id or "").strip()
+    owner_id_db = int(owner_id) if owner_id else None
 
-    if is_ajax:
-        updated = _sql_one(
-            "SELECT * FROM org_risks WHERE org_id = ? AND id = ?",
-            (org_id, risk_id),
-        )
-        return JSONResponse({"ok": True, "risk": updated})
+    sql = """
+    UPDATE org_risks
+    SET
+      code        = ?,
+      title       = ?,
+      category    = ?,
+      status      = ?,
+      severity    = ?,
+      owner_id    = ?,
+      description = ?,
+      updated_at  = ?
+    WHERE id = ? AND org_id = ?
+    """
 
-    next_url = request.form().get("next") if hasattr(request, "form") else None
-    return RedirectResponse(
-        url=next_url or f"/orgs/{org_id}/org-risks/{risk_id}",
-        status_code=303,
+    params = (
+        code_db,
+        title.strip(),
+        (category or "").strip() or None,
+        (status or "").strip() or None,
+        (severity or "").strip() or None,
+        owner_id_db,
+        (description or "").strip() or None,
+        now,
+        risk_id,
+        org_id,
     )
+
+    _sql_exec(sql, params)
+    return {"ok": True}
 
 @app.post("/orgs/{org_id}/org-risks/{risk_id}/delete")
 def org_risk_delete(request: Request, org_id: int, risk_id: int):
