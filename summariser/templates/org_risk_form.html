@@ -188,6 +188,7 @@
         type="button"
         id="riskDrawerClose"
         class="btn small"
+        data-risk-drawer-close="1"
       >
         Cancel
       </button>
@@ -198,7 +199,7 @@
             type="button"
             id="riskDrawerDelete"
             class="btn small"
-            data-delete-url="/orgs/{{ org_id }}/org-risks/{{ risk.id }}/delete"
+            data-risk-delete-url="/orgs/{{ org_id }}/org-risks/{{ risk.id }}/delete"
             style="border-color:#fecaca;color:#b91c1c;background:#fef2f2;"
           >
             Delete
