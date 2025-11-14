@@ -43,8 +43,9 @@
 
         <!-- Location -->
         <div>
-          <label class="block text-xs font-semibold text-gray-700 mb-1">Location</label>
+          <label class="block text-xs font-semibold text-gray-700 mb-1" for="flt-location">Location</label>
           <select
+            id="flt-location"
             name="location"
             class="w-full rounded-md border border-gray-300 px-2 py-1.5 text-sm"
           >
@@ -64,8 +65,9 @@
 
         <!-- Status -->
         <div>
-          <label class="block text-xs font-semibold text-gray-700 mb-1">Status</label>
+          <label class="block text-xs font-semibold text-gray-700 mb-1" for="flt-status">Status</label>
           <select
+            id="flt-status"
             name="status"
             class="w-full rounded-md border border-gray-300 px-2 py-1.5 text-sm"
           >
@@ -81,8 +83,9 @@
 
         <!-- Severity -->
         <div>
-          <label class="block text-xs font-semibold text-gray-700 mb-1">Severity</label>
+          <label class="block text-xs font-semibold text-gray-700 mb-1" for="flt-severity">Severity</label>
           <select
+            id="flt-severity"
             name="severity"
             class="w-full rounded-md border border-gray-300 px-2 py-1.5 text-sm"
           >
@@ -98,8 +101,9 @@
 
         <!-- Category -->
         <div>
-          <label class="block text-xs font-semibold text-gray-700 mb-1">Category</label>
+          <label class="block text-xs font-semibold text-gray-700 mb-1" for="flt-category">Category</label>
           <select
+            id="flt-category"
             name="category"
             class="w-full rounded-md border border-gray-300 px-2 py-1.5 text-sm"
           >
@@ -237,93 +241,83 @@
   </div>
 </div>
 
+<!-- Backdrop + drawer shell (always present) -->
 <!-- Right-hand risk drawer -->
-<div
-  id="riskDrawerBackdrop"
-  class="fixed inset-0 bg-slate-900/40 opacity-0 pointer-events-none transition-opacity z-40"
-></div>
+<div id="riskDrawerBackdrop" class="risk-drawer-backdrop"></div>
 
-<aside
-  id="riskDrawer"
-  class="fixed inset-y-0 right-0 max-w-full w-full sm:w-[480px] bg-white shadow-xl border-l border-gray-200
-         translate-x-full transition-transform z-50 flex flex-col"
->
-  <div id="riskDrawerInner" class="flex-1 overflow-y-auto">
-    <!-- Filled via AJAX -->
-  </div>
+<aside id="riskDrawer" class="risk-drawer">
+  <div id="riskDrawerInner" class="h-full overflow-y-auto"></div>
 </aside>
 
 <script>
-
-
-// GLOBAL — must exist before modal tries calling it
-window.handleRiskFormSubmit = function (e, form) {
-  e.preventDefault();
-
-  var formData = new FormData(form);
-
-  fetch(form.action, {
-    method: "POST",
-    body: formData,
-    headers: {
-      "Accept": "application/json",
-      "X-Requested-With": "fetch"
-    }
-  })
-  .then(function (resp) {
-    if (!resp.ok) {
-      alert("Couldn't save this risk.");
-      return null;
-    }
-    return resp.json();
-  })
-  .then(function (data) {
-    if (!data || !data.ok) {
-      alert("Couldn't save this risk.");
-      return;
-    }
-    // Ask the drawer (defined later) to close
-    if (window.closeRiskDrawer) {
-      window.closeRiskDrawer();
-    }
-    window.location.reload();
-  })
-  .catch(function (err) {
-    console.error(err);
-    alert("Error saving risk.");
-  });
-
-  return false; // block natural form submission
-};
-
 (function () {
+  console.debug("[risks] drawer script init");
+
   var drawer      = document.getElementById("riskDrawer");
-  var drawerInner = document.getElementById("riskDrawerInner");
   var backdrop    = document.getElementById("riskDrawerBackdrop");
+  var drawerInner = document.getElementById("riskDrawerInner");
+
+  if (!drawer || !backdrop || !drawerInner) {
+    console.error("[risks] drawer elements missing");
+    return;
+  }
 
   function openDrawer() {
-    if (!drawer || !backdrop) return;
-    backdrop.classList.remove("pointer-events-none");
-    backdrop.classList.add("opacity-100");
-    drawer.classList.remove("translate-x-full");
+    drawer.classList.add("risk-drawer--open");
+    backdrop.classList.add("risk-drawer-backdrop--visible");
   }
 
   function closeDrawer() {
-    if (!drawer || !backdrop || !drawerInner) return;
-    drawer.classList.add("translate-x-full");
-    backdrop.classList.add("pointer-events-none");
-    backdrop.classList.remove("opacity-100");
+    drawer.classList.remove("risk-drawer--open");
+    backdrop.classList.remove("risk-drawer-backdrop--visible");
     drawerInner.innerHTML = "";
   }
 
- window.closeRiskDrawer = closeDrawer;
+  function loadRisk(url) {
+    drawerInner.innerHTML =
+      "<div class='p-4 text-sm text-gray-500'>Loading…</div>";
+    openDrawer();
 
+    fetch(url, { headers: { "X-Requested-With": "fetch" } })
+      .then(function (resp) { return resp.ok ? resp.text() : null; })
+      .then(function (html) {
+        if (!html) {
+          drawerInner.innerHTML =
+            "<div class='p-4 text-sm text-red-700'>Unable to load this risk.</div>";
+          return;
+        }
+        drawerInner.innerHTML = html;
+      })
+      .catch(function (err) {
+        console.error(err);
+        drawerInner.innerHTML =
+          "<div class='p-4 text-sm text-red-700'>Error loading this risk.</div>";
+      });
+  }
 
-  // ----------------------------------------------------
-  // Close buttons + delete button (delegated)
-  // ----------------------------------------------------
-  document.addEventListener("click", function (e) {
-    // Close buttons (header “Close” + footer “Cancel”)
+  // Open existing risk
+  document.querySelectorAll(".js-open-risk").forEach(function (btn) {
+    btn.addEventListener("click", function (e) {
+      e.preventDefault();
+      var orgId  = btn.getAttribute("data-org-id");
+      var riskId = btn.getAttribute("data-risk-id");
+      if (!orgId || !riskId) return;
+      loadRisk("/orgs/" + orgId + "/org-risks/" + riskId + "/modal");
+    });
+  });
+
+  // New risk
+  document.querySelectorAll(".js-new-risk").forEach(function (btn) {
+    btn.addEventListener("click", function (e) {
+      e.preventDefault();
+      var orgId = btn.getAttribute("data-org-id");
+      if (!orgId) return;
+      loadRisk("/orgs/" + orgId + "/org-risks/new/drawer");
+    });
+  });
+
+  // Inside drawer: Cancel / Close / Delete
+  drawerInner.addEventListener("click", function (e) {
     var closeBtn = e.target.closest("[data-risk-drawer-close]");
     if (closeBtn) {
       e.preventDefault();
@@ -331,16 +325,12 @@ window.handleRiskFormSubmit = function (e, form) {
       return;
     }
 
-    // Delete
-    var deleteBtn = e.target.closest("#riskDrawerDelete");
+    var deleteBtn = e.target.closest("[data-risk-delete-url]");
     if (deleteBtn) {
       e.preventDefault();
-      var url = deleteBtn.getAttribute("data-delete-url");
+      var url = deleteBtn.getAttribute("data-risk-delete-url");
       if (!url) return;
-
-      if (!confirm("Delete this risk? This cannot be undone.")) {
-        return;
-      }
+      if (!confirm("Delete this risk? This cannot be undone.")) return;
 
       fetch(url, {
         method: "POST",
@@ -349,16 +339,42 @@ window.handleRiskFormSubmit = function (e, form) {
           "X-Requested-With": "fetch"
         }
       })
-      .then(function (resp) {
-        if (!resp.ok) {
-          alert("Couldn't delete this risk. Please try again.");
-          return null;
-        }
-        return resp.json();
-      })
+        .then(function (resp) { return resp.ok ? resp.json() : null; })
+        .then(function (data) {
+          if (!data || !data.ok) {
+            alert("Couldn't delete this risk.");
+            return;
+          }
+          closeDrawer();
+          window.location.reload();
+        })
+        .catch(function (err) {
+          console.error(err);
+          alert("Error deleting this risk.");
+        });
+    }
+  });
+
+  // Inside drawer: Save
+  drawerInner.addEventListener("submit", function (e) {
+    var form = e.target.closest("form[data-risk-form]");
+    if (!form) return;
+
+    e.preventDefault();
+    var formData = new FormData(form);
+
+    fetch(form.action, {
+      method: form.method || "POST",
+      body: formData,
+      headers: {
+        "Accept": "application/json",
+        "X-Requested-With": "fetch"
+      }
+    })
+      .then(function (resp) { return resp.ok ? resp.json() : null; })
       .then(function (data) {
         if (!data || !data.ok) {
-          alert("Couldn't delete this risk. Please try again.");
+          alert("Couldn't save this risk.");
           return;
         }
         closeDrawer();
@@ -366,101 +382,17 @@ window.handleRiskFormSubmit = function (e, form) {
       })
       .catch(function (err) {
         console.error(err);
-        alert("Error deleting this risk.");
+        alert("Error saving this risk.");
       });
-    }
   });
 
-  // ----------------------------------------------------
-  // Open existing risk
-  // ----------------------------------------------------
-  var openButtons = document.querySelectorAll(".js-open-risk");
-  for (var i = 0; i < openButtons.length; i++) {
-    openButtons[i].addEventListener("click", function (e) {
-      e.preventDefault();
-      var orgId  = this.getAttribute("data-org-id");
-      var riskId = this.getAttribute("data-risk-id");
-      if (!orgId || !riskId || !drawerInner) return;
-
-      drawerInner.innerHTML =
-        "<div class='p-4 text-sm text-gray-500'>Loading…</div>";
-      openDrawer();
-
-      fetch("/orgs/" + orgId + "/org-risks/" + riskId + "/modal")
-        .then(function (resp) {
-          if (!resp.ok) {
-            drawerInner.innerHTML =
-              "<div class='p-4 text-sm text-red-700'>Unable to load this risk.</div>";
-            return null;
-          }
-          return resp.text();
-        })
-        .then(function (html) {
-          if (!html) return;
-          drawerInner.innerHTML = html;
-        })
-        .catch(function (err) {
-          console.error(err);
-          drawerInner.innerHTML =
-            "<div class='p-4 text-sm text-red-700'>Error loading this risk.</div>";
-        });
-    });
-  }
-
-  // ----------------------------------------------------
-  // New risk
-  // ----------------------------------------------------
-  var newButtons = document.querySelectorAll(".js-new-risk");
-  for (var j = 0; j < newButtons.length; j++) {
-    newButtons[j].addEventListener("click", function (e) {
-      e.preventDefault();
-      var orgId = this.getAttribute("data-org-id");
-      if (!orgId || !drawerInner) return;
-
-      drawerInner.innerHTML =
-        "<div class='p-4 text-sm text-gray-500'>Loading form…</div>";
-      openDrawer();
-
-      fetch("/orgs/" + orgId + "/org-risks/new/drawer")
-        .then(function (resp) {
-          if (!resp.ok) {
-            drawerInner.innerHTML =
-              "<div class='p-4 text-sm text-red-700'>Unable to load new risk form.</div>";
-            return null;
-          }
-          return resp.text();
-        })
-        .then(function (html) {
-          if (!html) return;
-          drawerInner.innerHTML = html;
-        })
-        .catch(function (err) {
-          console.error(err);
-          drawerInner.innerHTML =
-            "<div class='p-4 text-sm text-red-700'>Error loading new risk form.</div>";
-        });
-    });
-  }
-
-  // ----------------------------------------------------
-  // Backdrop + ESC
-  // ----------------------------------------------------
-  if (backdrop) {
-    backdrop.addEventListener("click", function () {
-      closeDrawer();
-    });
-  }
-
+  // Backdrop + Escape
+  backdrop.addEventListener("click", closeDrawer);
   document.addEventListener("keydown", function (e) {
-    if (e.key === "Escape") {
-      closeDrawer();
-    }
+    if (e.key === "Escape") closeDrawer();
   });
 })();
 </script>
-
-
-
 
 
 {% endblock %}
