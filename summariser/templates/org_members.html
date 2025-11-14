@@ -1,165 +1,67 @@
 {% extends "base.html" %}
-{% block title %}{{ org.name }} — People{% endblock %}
+{% block title %}{{ org.name }} — Personnel{% endblock %}
 
 {% block content %}
 <div class="page-title">
-  <h1>
-    {% if org %}{{ org.name }}{% else %}Organisation {{ org_id }}{% endif %} — People
-  </h1>
-  <a href="/orgs/{{ org_id }}" class="btn small">
-    ← Back to overview
+  <div>
+    <a href="/orgs/{{ org_id }}" class="text-sm text-gray-500 hover:text-gray-700">
+      {{ org.name }}
+    </a>
+    <h1>Personnel</h1>
+  </div>
+
+  <a href="/orgs/{{ org_id }}/members/new"
+     class="btn primary">
+    + Add personnel
   </a>
 </div>
 
-<div class="wrap mt-4">
-  <!-- LEFT: Add person form -->
-  <section class="panel max-w-md">
-    <h2 class="text-base font-semibold text-gray-900 mb-2">
-      Add personnel
-    </h2>
-    <p class="text-xs text-gray-500 mb-4">
-      Add directors, key personnel and the ultimate risk owner for this licence.
-    </p>
+<div class="bg-white border border-gray-200 rounded-xl p-6 shadow-sm w-full max-w-xl">
 
-    <form method="post" action="/orgs/{{ org_id }}/members/new" class="space-y-3">
-      <div>
-        <label class="block text-xs font-semibold text-gray-700 mb-1">Name</label>
-        <input
-          type="text"
-          name="name"
-          required
-          class="w-full rounded-md border border-gray-300 px-2 py-1.5 text-sm"
-          placeholder="e.g. Jane Smith"
-        >
-      </div>
-
-      <div>
-        <label class="block text-xs font-semibold text-gray-700 mb-1">Role / position</label>
-        <input
-          type="text"
-          name="role"
-          class="w-full rounded-md border border-gray-300 px-2 py-1.5 text-sm"
-          placeholder="e.g. Director of Operations"
-        >
-      </div>
-
-      <div>
-        <label class="block text-xs font-semibold text-gray-700 mb-1">Email (optional)</label>
-        <input
-          type="email"
-          name="email"
-          class="w-full rounded-md border border-gray-300 px-2 py-1.5 text-sm"
-          placeholder="name@example.com"
-        >
-      </div>
-
-      <div class="border border-gray-100 rounded-md px-3 py-2 space-y-1 text-xs text-gray-700">
-        <label class="flex items-center gap-2">
-          <input type="checkbox" name="is_key_personnel" class="mt-0.5">
-          <span>Key personnel</span>
-        </label>
-        <label class="flex items-center gap-2">
-          <input type="checkbox" name="is_ultimate_risk_owner" class="mt-0.5">
-          <span>Ultimate risk owner for this licence</span>
-        </label>
-        <p class="text-[11px] text-gray-500 mt-1">
-          You can only have one ultimate risk owner at a time. Creating a new one
-          will replace the existing owner.
-        </p>
-      </div>
-
-      <div class="pt-2">
-        <button type="submit" class="btn primary w-full">
-          + Add person
-        </button>
-      </div>
-    </form>
-  </section>
-
-  <!-- RIGHT: Existing people -->
-  <section class="panel flex-1">
-    <h2 class="text-base font-semibold text-gray-900 mb-3">
-      Personnel for {{ org.name }}
-    </h2>
-
-    {% if (key_people and key_people|length) or (other_members and other_members|length) %}
-      <div class="space-y-6 text-sm">
-        {% if key_people and key_people|length %}
-          <div>
-            <h3 class="text-xs font-semibold text-gray-700 uppercase tracking-wide mb-2">
-              Key personnel &amp; ultimate owner
-            </h3>
-            <div class="border border-gray-100 rounded-lg divide-y divide-gray-100">
-              {% for p in key_people %}
-                <div class="flex items-center justify-between px-3 py-2">
-                  <div>
-                    <div class="font-medium">
-                      {{ p.name }}
-                      {% if p.is_ultimate_risk_owner %}
-                        <span class="ml-2 inline-flex items-center rounded-full bg-green-100 px-2 py-0.5 text-[11px] font-semibold text-green-700">
-                          Ultimate owner
-                        </span>
-                      {% endif %}
-                      {% if p.is_key_personnel and not p.is_ultimate_risk_owner %}
-                        <span class="ml-2 inline-flex items-center rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-semibold text-amber-700">
-                          Key personnel
-                        </span>
-                      {% endif %}
-                    </div>
-                    {% if p.role %}
-                      <div class="text-xs text-gray-600">{{ p.role }}</div>
-                    {% endif %}
-                    {% if p.email %}
-                      <div class="text-xs text-gray-500 mt-0.5">{{ p.email }}</div>
-                    {% endif %}
-                  </div>
-
-                  <form method="post" action="/orgs/{{ org_id }}/members/{{ p.id }}/delete">
-                    <button type="submit" class="btn small" style="font-size:11px;">
-                      Delete
-                    </button>
-                  </form>
-                </div>
-              {% endfor %}
-            </div>
-          </div>
-        {% endif %}
-
-        {% if other_members and other_members|length %}
-          <div>
-            <h3 class="text-xs font-semibold text-gray-700 uppercase tracking-wide mb-2">
-              Other contacts
-            </h3>
-            <div class="border border-gray-100 rounded-lg divide-y divide-gray-100">
-              {% for p in other_members %}
-                <div class="flex items-center justify-between px-3 py-2">
-                  <div>
-                    <div class="font-medium">{{ p.name }}</div>
-                    {% if p.role %}
-                      <div class="text-xs text-gray-600">{{ p.role }}</div>
-                    {% endif %}
-                    {% if p.email %}
-                      <div class="text-xs text-gray-500 mt-0.5">{{ p.email }}</div>
-                    {% endif %}
-                  </div>
-
-                  <form method="post" action="/orgs/{{ org_id }}/members/{{ p.id }}/delete">
-                    <button type="submit" class="btn small" style="font-size:11px;">
-                      Delete
-                    </button>
-                  </form>
-                </div>
-              {% endfor %}
-            </div>
-          </div>
-        {% endif %}
-      </div>
-    {% else %}
-      <p class="text-sm text-gray-500">
-        No personnel recorded yet. Use the form on the left to add directors,
-        key personnel or the ultimate risk owner.
+  <div class="flex items-center justify-between mb-4">
+    <div>
+      <h2 class="text-lg font-semibold">People</h2>
+      <p class="text-sm text-gray-600">
+        Key personnel and risk owners linked to this organisation.
       </p>
-    {% endif %}
-  </section>
+    </div>
+    <span class="text-xs bg-gray-100 text-gray-700 px-2 py-1 rounded-full">
+      {{ members|length }}
+    </span>
+  </div>
+
+  {% if members|length == 0 %}
+    <div class="border border-dashed border-gray-300 rounded-lg p-6 text-center text-gray-500">
+      No personnel recorded yet.
+      <br>
+      Add your first person.
+    </div>
+  {% else %}
+    <div class="space-y-4">
+      {% for m in members %}
+        <div class="border border-gray-200 rounded-lg p-4">
+          <div class="flex items-start justify-between">
+            <div>
+              <div class="font-medium text-gray-900">{{ m.name }}</div>
+              <div class="text-sm text-gray-600">{{ m.role }}</div>
+            </div>
+            <div class="flex gap-2">
+              <a class="btn small" href="/orgs/{{ org_id }}/members/{{ m.id }}/edit">Edit</a>
+              <form method="post" action="/orgs/{{ org_id }}/members/{{ m.id }}/delete">
+                <button class="btn small danger">Delete</button>
+              </form>
+            </div>
+          </div>
+
+          {% if m.is_key == 1 %}
+            <span class="inline-block mt-2 text-xs bg-green-100 text-green-800 px-2 py-1 rounded-full">
+              Key person
+            </span>
+          {% endif %}
+        </div>
+      {% endfor %}
+    </div>
+  {% endif %}
 </div>
+
 {% endblock %}
