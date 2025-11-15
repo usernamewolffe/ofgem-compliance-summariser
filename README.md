@@ -1,15 +1,15 @@
 # Ofgem Compliance Summariser
 
-The Ofgem Compliance Summariser pulls compliance-relevant news from UK energy regulators, distils each article into an actionable summary, and serves the results through a small FastAPI application with a lightweight compliance workspace (organisations, sites, controls, and risk register tooling).
+The Ofgem Compliance Summariser monitors news and regulatory updates from UK energy bodies, distils each article into an actionable summary, and exposes the results through a FastAPI service with a lightweight compliance workspace (organisations, sites, controls, and risk register tooling).
 
-## Key features
+## Features
 
-- **Automated data collection** – RSS/Atom feeds and HTML pages from Ofgem, DESNZ, the Environment Agency, HSE, NCSC and other energy market bodies are downloaded, normalised, deduplicated, and topic tagged to reduce noise.
-- **Summaries & tags** – Each article is summarised in up to 100 words using OpenAI (if an API key is available) with a deterministic fallback. Simple heuristics add topic labels and ensure we still get a useful summary when the AI service is unavailable.
-- **Persistent storage** – Items, saved filters, framework controls, organisations, sites, controls, and risks are stored in SQLite with schema migrations handled programmatically. Upserts, indexes, and helper accessors live in `storage/db.py` for both API and tooling usage.
-- **FastAPI UI + JSON API** – `api/server.py` exposes JSON feeds (`/api/items`, `/api/feed`, `/api/feed.csv`) and a small authenticated UI for browsing summaries, switching organisations, managing org members/sites, logging controls, and maintaining a risk register. Sessions use signed cookies with configurable inactivity timeouts.
-- **Compliance workflows** – Web pages let you capture org/site metadata, assign owners to controls, capture risk status and treatments, and link articles to framework controls for traceability.
-- **Email sharing & AI utilities** – Articles can be emailed via SendGrid, and helper scripts pre-compute AI summaries (including PDF text extraction) so the UI responds instantly.
+- **Automated collection** – RSS/Atom feeds and HTML pages from Ofgem, DESNZ, the Environment Agency, HSE, NCSC, and other energy market sources are downloaded, normalised, deduplicated, and tagged to minimise noise.
+- **Summaries & tagging** – Articles are summarised in up to 100 words using OpenAI when available, with deterministic fallbacks to ensure reliable output. Simple heuristics add topic labels and guarantee a useful summary if AI is unavailable.
+- **SQLite persistence** – Items, saved filters, framework controls, organisations, sites, controls, and risks are stored in SQLite. Upserts, indexes, and helper accessors live in `storage/db.py` for both API and tooling usage.
+- **FastAPI UI & JSON API** – `api/server.py` exposes JSON feeds (`/api/items`, `/api/feed`, `/api/feed.csv`) and an authenticated UI for browsing summaries, switching organisations, managing org members/sites, logging controls, and maintaining a risk register. Sessions use signed cookies with configurable inactivity timeouts.
+- **Compliance workflows** – The UI lets you capture organisation/site metadata, assign owners to controls, capture risk status and treatments, and link articles to framework controls for traceability.
+- **Email sharing & utilities** – Articles can be emailed via SendGrid, and helper scripts pre-compute AI summaries (including PDF extraction) so the UI responds instantly.
 
 ## Repository layout
 
@@ -106,7 +106,7 @@ Run any of these scripts with `python path/to/script.py` once your virtual envir
 
 ## Development tips
 
-- The SQLite schema is automatically migrated when the API or scraper touches the database. SQL migration files (`migrations_*.sql`) are also included for audit purposes if you prefer manual migrations.
+- The SQLite schema is automatically migrated when the API or scraper touches the database. SQL migration files (`migrations_*.sql`) are included for audit purposes if you prefer manual migrations.
 - When developing locally, clear `ofgem.db` to start fresh or point `DB_PATH` to an alternative file.
 - Consider scheduling `python main.py` via cron (or GitHub Actions) and `tools/precompute_summaries.py` overnight so your database is always fresh and AI summaries stay cached.
 
