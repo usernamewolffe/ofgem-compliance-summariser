@@ -191,24 +191,76 @@
             {% endif %}
 
             <!-- Actions -->
-            <div class="mt-4 flex flex-wrap items-center gap-2">
-              <button class="btn-muted text-sm" data-open-save>Save to folder</button>
-              <button class="btn-muted text-sm" data-open-tag>Tag to site/control</button>
+            <div class="mt-4 flex flex-wrap items-center gap-3">
+              <!-- LEFT: Big, obvious “Save” + “Link to risk” -->
+              <div class="flex flex-wrap items-center gap-2">
+                <!-- Save to folder (primary pill) -->
+                <button
+                  class="inline-flex items-center gap-1 rounded-full px-3 py-1 text-xs font-semibold bg-emerald-600 text-white shadow-sm hover:bg-emerald-700 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                  type="button"
+                  data-open-save
+                >
+                  <span>★ Save to folder</span>
+                </button>
 
-              <a class="btn-muted text-sm" href="/items/{{ e.guid }}">Open</a>
+                <!-- Link to risk (dropdown + confirm button) -->
+                {% if org_risks and org_risks|length %}
+                  <div class="inline-flex items-center gap-2">
+                    <label class="text-[0.7rem] font-semibold uppercase tracking-wide text-emerald-800">
+                      Link to risk
+                    </label>
+                    <select
+                      class="rounded-full border border-emerald-300 bg-emerald-50 px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                      data-link-risk-select
+                    >
+                      <option value="">Select…</option>
+                      {% for r in org_risks %}
+                        <option value="{{ r.id }}">
+                          {{ r.code or ('R-' ~ r.id) }} — {{ r.title }}
+                        </option>
+                      {% endfor %}
+                    </select>
+                    <button
+                      type="button"
+                      class="rounded-full border border-emerald-500 px-3 py-1 text-[0.7rem] font-semibold text-emerald-800 hover:bg-emerald-50"
+                      data-link-risk-confirm
+                    >
+                      Link
+                    </button>
+                  </div>
+                {% else %}
+                  <span class="text-xs text-gray-400 italic">
+                    No org risks yet to link.
+                  </span>
+                {% endif %}
 
-              <!-- Send to colleague -->
-              <form action="/send" method="post" class="flex items-center gap-2 ml-auto">
-                <input type="hidden" name="guid" value="{{ e.guid }}">
-                <input
-                  class="min-w-[220px] flex-1 rounded-lg border border-gray-200 px-3 py-2 text-sm"
-                  type="email" name="email" placeholder="colleague@example.com" required>
-                <button type="submit" class="btn-primary text-sm">Send</button>
-              </form>
+                <!-- Optional: keep old site/control tagging but make it subtle -->
+                <button
+                  class="text-[0.72rem] text-gray-500 underline underline-offset-2"
+                  type="button"
+                  data-open-tag
+                >
+                  Advanced: tag to site/control
+                </button>
+              </div>
+
+              <!-- RIGHT: open + send -->
+              <div class="flex flex-1 flex-wrap items-center gap-2 justify-end">
+                <a class="btn-muted text-sm" href="/items/{{ e.guid }}">Open</a>
+
+                <!-- Send to colleague -->
+                <form action="/send" method="post" class="flex items-center gap-2 min-w-[260px]">
+                  <input type="hidden" name="guid" value="{{ e.guid }}">
+                  <input
+                    class="flex-1 rounded-lg border border-gray-200 px-3 py-2 text-xs"
+                    type="email" name="email" placeholder="colleague@example.com" required>
+                  <button type="submit" class="btn-primary text-xs px-3 py-1">Send</button>
+                </form>
+              </div>
             </div>
 
             <!-- Inline status -->
-            <div class="muted mt-2 hidden" data-status></div>
+            <div class="muted mt-2 hidden text-xs" data-status></div>
           </li>
           {% endfor %}
         </ul>
@@ -262,7 +314,7 @@
     </form>
   </dialog>
 
-  <!-- Tag dialog -->
+  <!-- Tag dialog (still used for advanced site/control tagging) -->
   <dialog id="dlgTag" class="rounded-2xl" style="border:none; padding:0; max-width:680px; width:96%;">
     <form method="dialog" class="panel">
       <h3 class="text-base font-semibold mb-3">Tag to site / control</h3>
@@ -291,7 +343,7 @@
 
 {% block scripts %}
 <script>
-/* JS unchanged */
+/* JS */
 (function() {
   async function jsonFetch(url, opts={}) {
     const res = await fetch(url, { credentials: 'same-origin', ...opts });
@@ -310,6 +362,7 @@
     el.style.color = ok ? 'var(--muted, #6b7280)' : '#b00020';
   }
 
+  // Delete saved filter
   document.querySelectorAll('[data-delete-id]')?.forEach(btn => {
     btn.addEventListener('click', async (e) => {
       e.preventDefault();
@@ -322,6 +375,7 @@
     });
   });
 
+  // Save current filters
   const saveBtn = document.getElementById('saveFilter');
   if (saveBtn) {
     saveBtn.addEventListener('click', async (e) => {
@@ -359,6 +413,23 @@
       body: JSON.stringify({ name })
     });
   }
+
+  async function tagGuidToRisk(guid, riskId, orgId) {
+    const formData = new FormData();
+    formData.append("guid", guid);
+
+    const resp = await fetch(`/api/orgs/${orgId}/org-risks/${riskId}/tag-item`, {
+      method: "POST",
+      body: formData,
+      headers: { "X-Requested-With": "fetch" },
+    });
+
+    const data = await resp.json();
+    if (!data.ok) {
+      throw new Error(data.error || "Failed to tag item");
+    }
+  }
+
   async function saveItem(guid, folder_id, note) {
     return fetch('/api/items/save', {
       method: 'POST',
@@ -368,6 +439,7 @@
     });
   }
 
+  // OPEN SAVE DIALOG
   document.addEventListener('click', async (e) => {
     const openSave = e.target.closest('[data-open-save]');
     if (openSave) {
@@ -392,6 +464,7 @@
     }
   });
 
+  // CREATE FOLDER
   document.getElementById('btnCreateFolder')?.addEventListener('click', async (e) => {
     e.preventDefault();
     const name = (document.getElementById('newFolderName')?.value || '').trim();
@@ -408,6 +481,7 @@
     } catch(err) { alert('Failed to create folder'); }
   });
 
+  // SAVE ITEM
   dlgSave?.querySelector('[data-submit]')?.addEventListener('click', async (e) => {
     e.preventDefault();
     const guid = dlgSave.querySelector('input[name="guid"]').value;
@@ -430,6 +504,7 @@
   });
   dlgSave?.querySelector('[data-cancel]')?.addEventListener('click', () => dlgSave.close());
 
+  // TAG TO SITE/CONTROL (ADVANCED)
   const dlgTag = document.getElementById('dlgTag');
   async function loadSites() { return jsonFetch(`/api/orgs/${orgId}/sites`); }
   async function loadOrgControls() { return jsonFetch(`/api/orgs/${orgId}/org-controls`); }
@@ -463,8 +538,36 @@
 
       dlgTag.showModal();
     }
+
+    // CONFIRM LINK TO RISK
+    const linkBtn = e.target.closest('[data-link-risk-confirm]');
+    if (linkBtn) {
+      const card = linkBtn.closest('[data-guid]');
+      const guid = card?.getAttribute('data-guid');
+      if (!guid) return;
+
+      const select = card.querySelector('select[data-link-risk-select]');
+      const riskId = select?.value;
+      if (!riskId) {
+        alert('Choose a risk to link to first.');
+        return;
+      }
+
+      (async () => {
+        try {
+          await tagGuidToRisk(guid, riskId, orgId);
+          showStatus(card, 'Linked to risk ✔');
+          // reset select for clarity
+          select.value = '';
+        } catch (err) {
+          console.error(err);
+          showStatus(card, 'Failed to link to risk', false);
+        }
+      })();
+    }
   });
 
+  // SUBMIT ADVANCED TAG
   dlgTag?.querySelector('[data-submit]')?.addEventListener('click', async (e) => {
     e.preventDefault();
     const guid = dlgTag.querySelector('input[name="guid"]').value;
