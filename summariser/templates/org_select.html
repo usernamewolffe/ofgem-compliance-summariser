@@ -1,0 +1,100 @@
+{% extends "base.html" %}
+{% block title %}Select organisation{% endblock %}
+
+{% block content %}
+<div class="mx-auto max-w-4xl px-4 sm:px-6 lg:px-8 py-6 space-y-4">
+
+  <!-- Page heading -->
+  <div class="page-title">
+    <h1>Select organisation</h1>
+  </div>
+
+  <div class="wrap max-w-3xl mx-auto">
+    <section class="panel space-y-5" style="width:100%; max-width:720px; margin:0 auto;">
+
+      <!-- Intro -->
+      <header class="flex items-start justify-between gap-4">
+        <div>
+          <h2 class="text-base font-semibold text-gray-900">
+            Your organisations
+          </h2>
+          <p class="mt-1 text-sm text-gray-600">
+            Choose which organisation you want to work on. You can switch at any time.
+          </p>
+        </div>
+        <div class="hidden sm:flex">
+          <a
+            href="/orgs/new"
+            class="btn primary small"
+          >
+            + Create new organisation
+          </a>
+        </div>
+      </header>
+
+      <!-- Org list -->
+      {% if orgs and orgs|length %}
+        <ul class="space-y-3">
+          {% for org in orgs %}
+            <li class="border border-gray-200 rounded-lg p-3 sm:p-4 flex items-center justify-between gap-3 bg-white hover:border-emerald-300 transition">
+              <div class="min-w-0">
+                <div class="flex items-center gap-2">
+                  <span class="font-medium text-gray-900 truncate">
+                    {{ org.name }}
+                  </span>
+                </div>
+                {% if org.email or org.head_office_address %}
+                  <p class="mt-1 text-xs text-gray-500 line-clamp-1">
+                    {% if org.email %}{{ org.email }}{% endif %}
+                    {% if org.email and org.head_office_address %} · {% endif %}
+                    {% if org.head_office_address %}{{ org.head_office_address }}{% endif %}
+                  </p>
+                {% endif %}
+              </div>
+
+              <div class="flex items-center gap-2 shrink-0">
+                <a
+                  href="/orgs/switch?org_id={{ org.id }}&next=/summaries"
+                  class="btn small"
+                >
+                  Open
+                </a>
+              </div>
+            </li>
+          {% endfor %}
+        </ul>
+      {% else %}
+        <div class="rounded-md border border-dashed border-gray-300 bg-gray-50 px-4 py-6 text-center">
+          <p class="text-sm text-gray-700 font-medium">
+            No organisations yet.
+          </p>
+          <p class="mt-1 text-xs text-gray-500">
+            Create your first organisation to start adding sites, controls and risks.
+          </p>
+        </div>
+      {% endif %}
+
+      <!-- Mobile / fallback create button -->
+      <div class="sm:hidden">
+        <a
+          href="/orgs/new"
+          class="btn primary small w-full text-center justify-center"
+        >
+          + Create new organisation
+        </a>
+      </div>
+
+      <!-- Secondary actions -->
+      <div class="pt-2 border-t border-gray-100 flex justify-between items-center text-xs text-gray-500">
+        <span>
+          Signed in as {{ current_user_email(request) if current_user_email is defined else '' }}
+        </span>
+        <a href="/summaries" class="hover:underline">
+          Back to summaries
+        </a>
+      </div>
+
+    </section>
+  </div>
+</div>
+{% endblock %}

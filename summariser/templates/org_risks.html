@@ -1,0 +1,398 @@
+{% extends "base.html" %}
+{% block title %}{{ org.name }} — Risks{% endblock %}
+
+{% block content %}
+<div class="mx-auto max-w-6xl px-4 sm:px-6 lg:px-8 py-4 space-y-4">
+
+  <!-- Breadcrumb / heading -->
+  <div class="flex items-center justify-between gap-4">
+    <div>
+      <nav class="text-xs text-gray-500 mb-1">
+        <a href="/orgs/{{ org_id }}" class="hover:underline">{{ org.name }}</a>
+        / <span>Risks</span>
+      </nav>
+      <h1 class="text-lg font-semibold text-gray-900">Risks ({{ risks|length }})</h1>
+    </div>
+
+    <div class="flex gap-2">
+      <button
+        type="button"
+        class="btn small primary js-new-risk"
+        data-org-id="{{ org_id }}"
+      >
+        + Add risk
+      </button>
+
+      <a href="/orgs/{{ org_id }}" class="btn small">
+        Back to overview
+      </a>
+    </div>
+  </div>
+
+  <!-- Layout: filters + table -->
+  <div class="grid gap-4 lg:grid-cols-[260px_1fr]">
+
+    <!-- Filters sidebar -->
+    <aside class="panel text-sm space-y-3">
+      <h2 class="text-sm font-semibold text-gray-900">All risks</h2>
+      <p class="text-xs text-gray-600">
+        Corporate risks and site-specific risks for this organisation.
+      </p>
+
+      <form method="get" class="space-y-3">
+
+        <!-- Location -->
+        <div>
+          <label class="block text-xs font-semibold text-gray-700 mb-1" for="flt-location">Location</label>
+          <select
+            id="flt-location"
+            name="location"
+            class="w-full rounded-md border border-gray-300 px-2 py-1.5 text-sm"
+          >
+            {% set loc = active.location or '' %}
+            <option value="">All locations</option>
+            <option value="corp" {{ 'selected' if loc == 'corp' else '' }}>Corporate</option>
+            {% for s in sites %}
+              <option
+                value="{{ s.id }}"
+                {{ 'selected' if loc == (s.id|string) else '' }}
+              >
+                {{ s.name }}
+              </option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <!-- Status -->
+        <div>
+          <label class="block text-xs font-semibold text-gray-700 mb-1" for="flt-status">Status</label>
+          <select
+            id="flt-status"
+            name="status"
+            class="w-full rounded-md border border-gray-300 px-2 py-1.5 text-sm"
+          >
+            <option value="">Any</option>
+            {% for s in status_choices %}
+              <option
+                value="{{ s }}"
+                {{ 'selected' if active.status == s else '' }}
+              >{{ s }}</option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <!-- Severity -->
+        <div>
+          <label class="block text-xs font-semibold text-gray-700 mb-1" for="flt-severity">Severity</label>
+          <select
+            id="flt-severity"
+            name="severity"
+            class="w-full rounded-md border border-gray-300 px-2 py-1.5 text-sm"
+          >
+            <option value="">Any</option>
+            {% for s in severity_choices %}
+              <option
+                value="{{ s }}"
+                {{ 'selected' if active.severity == s else '' }}
+              >{{ s }}</option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <!-- Category -->
+        <div>
+          <label class="block text-xs font-semibold text-gray-700 mb-1" for="flt-category">Category</label>
+          <select
+            id="flt-category"
+            name="category"
+            class="w-full rounded-md border border-gray-300 px-2 py-1.5 text-sm"
+          >
+            <option value="">Any</option>
+            {% for c in category_choices %}
+              <option
+                value="{{ c }}"
+                {{ 'selected' if active.category == c else '' }}
+              >{{ c }}</option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <div class="flex gap-2 pt-1">
+          <button type="submit" class="btn small w-full">
+            Apply
+          </button>
+          <a href="/orgs/{{ org_id }}/org-risks" class="btn small w-full">
+            Reset
+          </a>
+        </div>
+
+      </form>
+    </aside>
+
+    <!-- Risks table -->
+    <section class="panel overflow-hidden">
+      <div class="overflow-x-auto">
+        <table class="min-w-full text-sm border-collapse">
+          <thead class="bg-gray-50 text-xs text-gray-600">
+            <tr>
+              <th class="px-3 py-2 text-left font-medium">Risk</th>
+              <th class="px-3 py-2 text-left font-medium">Location</th>
+              <th class="px-3 py-2 text-left font-medium">Status</th>
+              <th class="px-3 py-2 text-left font-medium">Severity</th>
+              <th class="px-3 py-2 text-left font-medium">Owner</th>
+              <th class="px-3 py-2 text-left font-medium">Controls</th>
+              <th class="px-3 py-2 text-left font-medium">Updated</th>
+              <th class="px-3 py-2 text-right font-medium"></th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-gray-100">
+          {% if risks %}
+            {% for r in risks %}
+              <tr class="align-top">
+                <td class="px-3 py-3">
+                  <div class="font-medium text-gray-900">
+                    {{ r.code or ('R-' ~ r.id) }} — {{ r.title or '(untitled risk)' }}
+                  </div>
+                  {% if r.category %}
+                    <div class="text-xs text-gray-500 mt-0.5">{{ r.category }}</div>
+                  {% endif %}
+                </td>
+                <td class="px-3 py-3 text-sm text-gray-700">
+                  {{ r.location_label }}
+                </td>
+                <td class="px-3 py-3">
+                  {% set st = r.status or 'Open' %}
+                  <span class="inline-block px-2 py-0.5 rounded-full text-xs
+                    {% if st|lower == 'open' %}bg-amber-100 text-amber-900
+                    {% elif st|lower in ['mitigated','in progress'] %}bg-blue-100 text-blue-900
+                    {% elif st|lower == 'closed' %}bg-emerald-100 text-emerald-900
+                    {% else %}bg-gray-100 text-gray-800{% endif %}
+                  ">
+                    {{ st }}
+                  </span>
+                </td>
+                <td class="px-3 py-3">
+                  {% set sev = r.severity or '' %}
+                  <span class="inline-block px-2 py-0.5 rounded-full text-xs
+                    {% if sev|lower in ['high','severe'] %}bg-red-100 text-red-900
+                    {% elif sev|lower in ['medium','moderate'] %}bg-amber-100 text-amber-900
+                    {% elif sev|lower == 'low' %}bg-emerald-100 text-emerald-900
+                    {% else %}bg-gray-100 text-gray-800{% endif %}
+                  ">
+                    {{ sev or 'Not set' }}
+                  </span>
+                </td>
+                <td class="px-3 py-3 text-sm text-gray-700">
+                  {% if r.owner_name %}
+                    {{ r.owner_name }}
+                  {% else %}
+                    <span class="text-gray-400">Unassigned</span>
+                  {% endif %}
+                </td>
+                <td class="px-3 py-3 text-sm text-gray-700">
+                  {% if r.controls_count %}
+                    {{ r.controls_count }} linked
+                  {% else %}
+                    <span class="text-gray-400">None</span>
+                  {% endif %}
+                </td>
+                <td class="px-3 py-3 text-xs text-gray-600 break-all">
+                  {{ r.updated_at or r.created_at or '—' }}
+                </td>
+
+                <td class="px-3 py-3 text-right">
+                  <button
+                    type="button"
+                    class="btn small js-open-risk"
+                    data-org-id="{{ org_id }}"
+                    data-risk-id="{{ r.id }}"
+                  >
+                    Open
+                  </button>
+                </td>
+              </tr>
+            {% endfor %}
+          {% else %}
+            <tr>
+              <td colspan="8" class="px-3 py-6 text-sm text-gray-500 text-center">
+                No risks match these filters.
+              </td>
+            </tr>
+          {% endif %}
+          </tbody>
+        </table>
+      </div>
+
+      {% if total_pages > 1 %}
+        <div class="mt-3 flex justify-end gap-1 text-xs text-gray-600">
+          {% for p in page_numbers %}
+            {% if p == page %}
+              <span class="px-2 py-1 rounded-md bg-gray-100 font-semibold">{{ p }}</span>
+            {% else %}
+              <a href="{{ request.url.include_query_params(page=p) }}"
+                 class="px-2 py-1 rounded-md hover:bg-gray-50">
+                {{ p }}
+              </a>
+            {% endif %}
+          {% endfor %}
+        </div>
+      {% endif %}
+    </section>
+  </div>
+</div>
+
+<!-- Backdrop + drawer shell (always present) -->
+<!-- Right-hand risk drawer -->
+<div id="riskDrawerBackdrop" class="risk-drawer-backdrop"></div>
+
+<aside id="riskDrawer" class="risk-drawer">
+  <div id="riskDrawerInner" class="h-full overflow-y-auto"></div>
+</aside>
+
+<script>
+(function () {
+  console.debug("[risks] drawer script init");
+
+  var drawer      = document.getElementById("riskDrawer");
+  var backdrop    = document.getElementById("riskDrawerBackdrop");
+  var drawerInner = document.getElementById("riskDrawerInner");
+
+  if (!drawer || !backdrop || !drawerInner) {
+    console.error("[risks] drawer elements missing");
+    return;
+  }
+
+  function openDrawer() {
+    drawer.classList.add("risk-drawer--open");
+    backdrop.classList.add("risk-drawer-backdrop--visible");
+  }
+
+  function closeDrawer() {
+    drawer.classList.remove("risk-drawer--open");
+    backdrop.classList.remove("risk-drawer-backdrop--visible");
+    drawerInner.innerHTML = "";
+  }
+
+  function loadRisk(url) {
+    drawerInner.innerHTML =
+      "<div class='p-4 text-sm text-gray-500'>Loading…</div>";
+    openDrawer();
+
+    fetch(url, { headers: { "X-Requested-With": "fetch" } })
+      .then(function (resp) { return resp.ok ? resp.text() : null; })
+      .then(function (html) {
+        if (!html) {
+          drawerInner.innerHTML =
+            "<div class='p-4 text-sm text-red-700'>Unable to load this risk.</div>";
+          return;
+        }
+        drawerInner.innerHTML = html;
+      })
+      .catch(function (err) {
+        console.error(err);
+        drawerInner.innerHTML =
+          "<div class='p-4 text-sm text-red-700'>Error loading this risk.</div>";
+      });
+  }
+
+  // Open existing risk
+  document.querySelectorAll(".js-open-risk").forEach(function (btn) {
+    btn.addEventListener("click", function (e) {
+      e.preventDefault();
+      var orgId  = btn.getAttribute("data-org-id");
+      var riskId = btn.getAttribute("data-risk-id");
+      if (!orgId || !riskId) return;
+      loadRisk("/orgs/" + orgId + "/org-risks/" + riskId + "/modal");
+    });
+  });
+
+  // New risk
+  document.querySelectorAll(".js-new-risk").forEach(function (btn) {
+    btn.addEventListener("click", function (e) {
+      e.preventDefault();
+      var orgId = btn.getAttribute("data-org-id");
+      if (!orgId) return;
+      loadRisk("/orgs/" + orgId + "/org-risks/new/drawer");
+    });
+  });
+
+  // Inside drawer: Cancel / Close / Delete
+  drawerInner.addEventListener("click", function (e) {
+    var closeBtn = e.target.closest("[data-risk-drawer-close]");
+    if (closeBtn) {
+      e.preventDefault();
+      closeDrawer();
+      return;
+    }
+
+    var deleteBtn = e.target.closest("[data-risk-delete-url]");
+    if (deleteBtn) {
+      e.preventDefault();
+      var url = deleteBtn.getAttribute("data-risk-delete-url");
+      if (!url) return;
+      if (!confirm("Delete this risk? This cannot be undone.")) return;
+
+      fetch(url, {
+        method: "POST",
+        headers: {
+          "Accept": "application/json",
+          "X-Requested-With": "fetch"
+        }
+      })
+        .then(function (resp) { return resp.ok ? resp.json() : null; })
+        .then(function (data) {
+          if (!data || !data.ok) {
+            alert("Couldn't delete this risk.");
+            return;
+          }
+          closeDrawer();
+          window.location.reload();
+        })
+        .catch(function (err) {
+          console.error(err);
+          alert("Error deleting this risk.");
+        });
+    }
+  });
+
+  // Inside drawer: Save
+  drawerInner.addEventListener("submit", function (e) {
+    var form = e.target.closest("form[data-risk-form]");
+    if (!form) return;
+
+    e.preventDefault();
+    var formData = new FormData(form);
+
+    fetch(form.action, {
+      method: form.method || "POST",
+      body: formData,
+      headers: {
+        "Accept": "application/json",
+        "X-Requested-With": "fetch"
+      }
+    })
+      .then(function (resp) { return resp.ok ? resp.json() : null; })
+      .then(function (data) {
+        if (!data || !data.ok) {
+          alert("Couldn't save this risk.");
+          return;
+        }
+        closeDrawer();
+        window.location.reload();
+      })
+      .catch(function (err) {
+        console.error(err);
+        alert("Error saving this risk.");
+      });
+  });
+
+  // Backdrop + Escape
+  backdrop.addEventListener("click", closeDrawer);
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape") closeDrawer();
+  });
+})();
+</script>
+
+
+{% endblock %}

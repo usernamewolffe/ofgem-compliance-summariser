@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block title %}{{ org.name }} — Personnel{% endblock %}
+
+{% block content %}
+<div class="page-title">
+  <div>
+    <a href="/orgs/{{ org_id }}" class="text-sm text-gray-500 hover:text-gray-700">
+      {{ org.name }}
+    </a>
+    <h1>Personnel</h1>
+  </div>
+
+  <a href="/orgs/{{ org_id }}/members/new"
+     class="btn primary">
+    + Add personnel
+  </a>
+</div>
+
+<div class="bg-white border border-gray-200 rounded-xl p-6 shadow-sm w-full max-w-xl">
+
+  <div class="flex items-center justify-between mb-4">
+    <div>
+      <h2 class="text-lg font-semibold">People</h2>
+      <p class="text-sm text-gray-600">
+        Key personnel and risk owners linked to this organisation.
+      </p>
+    </div>
+    <span class="text-xs bg-gray-100 text-gray-700 px-2 py-1 rounded-full">
+      {{ members|length }}
+    </span>
+  </div>
+
+  {% if members|length == 0 %}
+    <div class="border border-dashed border-gray-300 rounded-lg p-6 text-center text-gray-500">
+      No personnel recorded yet.
+      <br>
+      Add your first person.
+    </div>
+  {% else %}
+    <div class="space-y-4">
+      {% for m in members %}
+        <div class="border border-gray-200 rounded-lg p-4">
+          <div class="flex items-start justify-between">
+            <div>
+              <div class="font-medium text-gray-900">{{ m.name }}</div>
+              <div class="text-sm text-gray-600">{{ m.role }}</div>
+            </div>
+            <div class="flex gap-2">
+              <a class="btn small" href="/orgs/{{ org_id }}/members/{{ m.id }}/edit">Edit</a>
+              <form method="post" action="/orgs/{{ org_id }}/members/{{ m.id }}/delete">
+                <button class="btn small danger">Delete</button>
+              </form>
+            </div>
+          </div>
+
+          {% if m.is_key == 1 %}
+            <span class="inline-block mt-2 text-xs bg-green-100 text-green-800 px-2 py-1 rounded-full">
+              Key person
+            </span>
+          {% endif %}
+        </div>
+      {% endfor %}
+    </div>
+  {% endif %}
+</div>
+
+{% endblock %}

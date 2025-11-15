@@ -1,0 +1,499 @@
+{% extends "base.html" %}
+{% block title %}Compliance Summaries{% endblock %}
+
+{% block content %}
+
+<!-- Layout shim to FORCE a real sidebar regardless of other CSS -->
+<style>
+  .summaries-layout{
+    display:grid;
+    grid-template-columns: 280px minmax(0,1fr);
+    gap: 1rem;
+  }
+  @media (max-width: 860px){
+    .summaries-layout{
+      grid-template-columns: 1fr;
+    }
+  }
+  .summaries-sidebar{
+    position: sticky;
+    top: 72px;           /* adjust if your header is taller */
+    align-self: start;
+  }
+</style>
+
+  <!-- Page header -->
+  <div class="flex items-center justify-between gap-3 px-4 sm:px-6 lg:px-8 mt-3 mb-3">
+    <div class="flex items-center gap-3">
+      <h1 class="text-xl font-semibold">Compliance Summaries</h1>
+      <span class="pill">{{ (entries|length) if (entries is defined) else 0 }} shown</span>
+    </div>
+  </div>
+
+  <!-- Hard two-column: sidebar + content -->
+  <div class="mx-auto max-w-6xl px-4 sm:px-6 lg:px-8 summaries-layout">
+
+    <!-- Sidebar (REAL sidebar, fixed width, sticky) -->
+    <aside class="panel summaries-sidebar">
+      <form class="grid gap-4" action="/summaries" method="get" id="filterForm">
+        <input type="hidden" name="per_page" value="{{ active.per_page|default(25) }}">
+
+        <!-- Search -->
+        <div>
+          <h3 class="text-sm font-semibold mb-2">Search</h3>
+          <input
+            class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm"
+            type="text" name="q" value="{{ active.q|default('') }}"
+            placeholder="Search title or content…">
+        </div>
+
+        <!-- Date -->
+        <div>
+          <h3 class="text-sm font-semibold mb-2">Date</h3>
+          <div class="grid grid-cols-2 gap-2">
+            <input class="rounded-lg border border-gray-200 px-3 py-2 text-sm" type="date" name="date_from" value="{{ active.date_from|default('') }}">
+            <input class="rounded-lg border border-gray-200 px-3 py-2 text-sm" type="date" name="date_to" value="{{ active.date_to|default('') }}">
+          </div>
+        </div>
+
+        <!-- Sources -->
+        <div>
+          <h3 class="text-sm font-semibold mb-2">Sources</h3>
+          <div class="flex flex-wrap gap-2">
+            {% for s in (all_sources|default([])) %}
+            <label class="inline-flex items-center gap-2 text-sm">
+              <input class="rounded" type="checkbox" name="sources" value="{{ s }}" {% if s in (active.sources|default([])) %}checked{% endif %}>
+              <span>{{ s or 'Unknown' }}</span>
+            </label>
+            {% endfor %}
+          </div>
+        </div>
+
+        <!-- Topics -->
+        <div>
+          <h3 class="text-sm font-semibold mb-2">Topics</h3>
+          <div class="flex flex-wrap gap-2">
+            {% for t in (all_topics|default([])) %}
+            <label class="inline-flex items-center gap-2 text-sm">
+              <input class="rounded" type="checkbox" name="topics" value="{{ t }}" {% if t in (active.topics|default([])) %}checked{% endif %}>
+              <span>{{ t }}</span>
+            </label>
+            {% endfor %}
+          </div>
+        </div>
+
+        <!-- Actions -->
+        <div class="flex flex-wrap gap-2">
+          <button class="btn-primary" type="submit">Apply filters</button>
+          <a class="btn-muted" href="/summaries">Reset</a>
+        </div>
+
+        {% if uid %}
+        <!-- Saved Filters -->
+        <div class="border-t border-gray-100 pt-3">
+          <h3 class="text-sm font-semibold mb-2">Saved filters</h3>
+          {% if saved_filters and saved_filters|length %}
+            <ul class="grid gap-2">
+              {% for f in saved_filters %}
+              <li class="panel p-2 flex items-center justify-between gap-2">
+                <div class="text-sm">
+                  <strong>{{ f.name }}</strong>
+                  {% if f.cadence %}
+                    <span class="muted ml-1 text-xs">{{ f.cadence }}</span>
+                  {% endif %}
+                </div>
+                <div class="flex gap-2">
+                  <a class="btn-muted text-sm" href="/apply-saved-filter?filter_id={{ f.id }}">Apply</a>
+                  <button class="btn-muted text-sm" data-delete-id="{{ f.id }}" aria-label="Delete saved filter">Delete</button>
+                </div>
+              </li>
+              {% endfor %}
+            </ul>
+          {% else %}
+            <p class="muted text-sm">No saved filters yet.</p>
+          {% endif %}
+        </div>
+
+        <!-- Save current as new filter -->
+        <div>
+          <h3 class="text-sm font-semibold mb-2">Save current filter</h3>
+          <div class="flex gap-2">
+            <input class="flex-1 rounded-lg border border-gray-200 px-3 py-2 text-sm" type="text" id="saveName" placeholder="Name this filter…">
+            <button class="btn-muted" id="saveFilter" type="button">Save</button>
+          </div>
+          <p class="muted text-xs mt-1">Saves the current query, dates, selected sources & topics.</p>
+        </div>
+        {% endif %}
+
+        {% if folders and folders|length %}
+        <!-- My folders -->
+        <div class="border-t border-gray-100 pt-3">
+          <h3 class="text-sm font-semibold mb-2">My folders</h3>
+          <ul class="grid gap-1">
+            {% for f in folders %}
+            <li class="flex items-center justify-between">
+              <a class="hover:underline text-sm" href="/saved?folder_id={{ f.id }}">{{ f.name }}</a>
+              {% if f.count is defined %}<span class="pill">{{ f.count }}</span>{% endif %}
+            </li>
+            {% endfor %}
+          </ul>
+          <div class="mt-2">
+            <a class="btn-muted text-sm" href="/saved">All saved</a>
+          </div>
+        </div>
+        {% endif %}
+      </form>
+    </aside>
+
+    <!-- Results (main column) -->
+    <section>
+      {% set items = entries if (entries is defined) else [] %}
+      {% if items|length == 0 %}
+        <p class="muted">No entries found.</p>
+      {% else %}
+        <ul class="grid gap-3">
+          {% for e in items %}
+          <li class="card hover:shadow-md transition-shadow" data-guid="{{ e.guid }}">
+            <!-- Title: clearly clickable -->
+            <h2 class="text-lg font-semibold leading-snug">
+              <a href="{{ e.link }}" target="_blank" rel="noopener"
+                 class="text-emerald-700 hover:text-emerald-900 hover:underline transition-colors">
+                {{ e.title or 'Untitled' }}
+              </a>
+            </h2>
+
+            <div class="muted text-sm mt-1">
+              {{ e.source or 'Unknown' }}
+              {% if e.published_at %} • {{ e.published_at }}{% endif %}
+            </div>
+
+            {% set blurb = e.ai_summary or e.summary or e.content or '' %}
+            {% if blurb %}
+            <p class="mt-3 text-[0.98rem] leading-relaxed">
+              {{ blurb[:320] }}{% if blurb|length > 320 %}…{% endif %}
+            </p>
+            {% endif %}
+
+            {% if e.controls %}
+            <div class="mt-2 flex flex-wrap gap-2">
+              {% for c in e.controls %}
+              <span class="px-2 py-0.5 rounded-full text-xs text-white" style="background:#004b50">{{ c }}</span>
+              {% endfor %}
+            </div>
+            {% endif %}
+
+            {% if e.tags %}
+            <div class="mt-1 flex flex-wrap gap-1">
+              {% for tag in e.tags %}
+              <span class="pill">{{ tag }}</span>
+              {% endfor %}
+            </div>
+            {% endif %}
+
+            <!-- Actions -->
+            <div class="mt-4 flex flex-wrap items-center gap-2">
+              <button class="btn-muted text-sm" data-open-save>Save to folder</button>
+              <button class="btn-muted text-sm" data-open-tag>Tag to site/control</button>
+
+              <a class="btn-muted text-sm" href="/items/{{ e.guid }}">Open</a>
+
+              <!-- Send to colleague -->
+              <form action="/send" method="post" class="flex items-center gap-2 ml-auto">
+                <input type="hidden" name="guid" value="{{ e.guid }}">
+                <input
+                  class="min-w-[220px] flex-1 rounded-lg border border-gray-200 px-3 py-2 text-sm"
+                  type="email" name="email" placeholder="colleague@example.com" required>
+                <button type="submit" class="btn-primary text-sm">Send</button>
+              </form>
+            </div>
+
+            <!-- Inline status -->
+            <div class="muted mt-2 hidden" data-status></div>
+          </li>
+          {% endfor %}
+        </ul>
+
+        <!-- Pagination -->
+        {% if (total_pages is defined) and total_pages > 1 %}
+        <nav class="flex flex-wrap items-center gap-1 mt-4">
+          {% set qs = querystring_without_page if (querystring_without_page is defined) else '' %}
+          {% if page > 1 %}
+            <a class="btn-muted text-sm" href="?{{ qs }}{% if qs %}&{% endif %}page={{ page-1 }}">‹ Prev</a>
+          {% endif %}
+          {% for n in (page_numbers|default([1])) %}
+            {% if n == page %}
+              <span class="pill">{{ n }}</span>
+            {% else %}
+              <a class="btn-muted text-sm" href="?{{ qs }}{% if qs %}&{% endif %}page={{ n }}">{{ n }}</a>
+            {% endif %}
+          {% endfor %}
+          {% if page < total_pages %}
+            <a class="btn-muted text-sm" href="?{{ qs }}{% if qs %}&{% endif %}page={{ page+1 }}">Next ›</a>
+          {% endif %}
+        </nav>
+        {% endif %}
+      {% endif %}
+    </section>
+  </div>
+
+  <!-- Save dialog -->
+  <dialog id="dlgSave" class="rounded-2xl" style="border:none; padding:0; max-width:560px; width:96%;">
+    <form method="dialog" class="panel">
+      <h3 class="text-base font-semibold mb-3">Save to folder</h3>
+      <input type="hidden" name="guid">
+      <div class="grid gap-3">
+        <label class="text-sm">Folder
+          <select name="folder_id" id="saveFolderSelect" class="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 text-sm">
+            <option value="">— Choose folder —</option>
+          </select>
+        </label>
+        <div class="flex items-center gap-2">
+          <input type="text" id="newFolderName" placeholder="New folder name…" class="flex-1 rounded-lg border border-gray-200 px-3 py-2 text-sm">
+          <button class="btn-muted" id="btnCreateFolder" type="button">Create</button>
+        </div>
+        <label class="text-sm">Note (optional)
+          <input type="text" name="note" placeholder="Why is this useful?" class="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 text-sm">
+        </label>
+      </div>
+      <div class="flex justify-end gap-2 mt-4">
+        <button type="button" class="btn-muted" data-cancel>Cancel</button>
+        <button type="submit" class="btn-primary" data-submit>Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Tag dialog -->
+  <dialog id="dlgTag" class="rounded-2xl" style="border:none; padding:0; max-width:680px; width:96%;">
+    <form method="dialog" class="panel">
+      <h3 class="text-base font-semibold mb-3">Tag to site / control</h3>
+      <input type="hidden" name="guid">
+      <div class="grid gap-3">
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <label class="text-sm">Site (optional)
+            <select name="site_id" id="tagSiteSelect" class="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 text-sm">
+              <option value="">Corporate</option>
+            </select>
+          </label>
+          <label class="text-sm">Control (optional)
+            <select name="org_control_id" id="tagControlSelect" class="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 text-sm">
+              <option value="">— Choose control —</option>
+            </select>
+          </label>
+        </div>
+      </div>
+      <div class="flex justify-end gap-2 mt-4">
+        <button type="button" class="btn-muted" data-cancel>Cancel</button>
+        <button type="submit" class="btn-primary" data-submit>Tag</button>
+      </div>
+    </form>
+  </dialog>
+{% endblock %}
+
+{% block scripts %}
+<script>
+/* JS unchanged */
+(function() {
+  async function jsonFetch(url, opts={}) {
+    const res = await fetch(url, { credentials: 'same-origin', ...opts });
+    if (!res.ok) {
+      let msg = res.statusText;
+      try { const j = await res.json(); msg = j.detail || JSON.stringify(j); } catch(e) {}
+      throw new Error(msg);
+    }
+    return res.json();
+  }
+  function showStatus(cardEl, msg, ok=true) {
+    const el = cardEl.querySelector('[data-status]');
+    if (!el) return;
+    el.textContent = msg;
+    el.classList.remove('hidden');
+    el.style.color = ok ? 'var(--muted, #6b7280)' : '#b00020';
+  }
+
+  document.querySelectorAll('[data-delete-id]')?.forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      e.preventDefault();
+      const id = btn.getAttribute('data-delete-id');
+      if (!id) return;
+      if (!confirm('Delete this saved filter?')) return;
+      const res = await fetch(`/api/saved-filters/${encodeURIComponent(id)}`, { method: 'DELETE', credentials:'same-origin' });
+      if (res.ok) location.reload();
+      else alert('Failed to delete filter.');
+    });
+  });
+
+  const saveBtn = document.getElementById('saveFilter');
+  if (saveBtn) {
+    saveBtn.addEventListener('click', async (e) => {
+      e.preventDefault();
+      const nameInput = document.getElementById('saveName');
+      const name = (nameInput?.value || '').trim();
+      if (!name) { alert('Name your filter first.'); return; }
+
+      const url = new URL(window.location.href);
+      const params = new URLSearchParams(url.search);
+      const payload = { name, params: {} };
+      ['q','date_from','date_to','per_page'].forEach(k => { const v = params.get(k); if (v) payload.params[k] = v; });
+      ['sources','topics'].forEach(k => { const vals = [...params.getAll(k)]; if (vals.length) payload.params[k] = vals; });
+
+      const r = await fetch('/api/saved-filters', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        credentials: 'same-origin'
+      });
+      if (!r.ok) { alert('Failed to save filter.'); return; }
+      if (nameInput) nameInput.value = '';
+      location.reload();
+    });
+  }
+
+  const orgId = {{ org_id|default(1) }};
+  const dlgSave = document.getElementById('dlgSave');
+
+  async function loadFolders() { return jsonFetch('/api/folders'); }
+  async function createFolder(name) {
+    return jsonFetch('/api/folders', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ name })
+    });
+  }
+  async function saveItem(guid, folder_id, note) {
+    return fetch('/api/items/save', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json', 'Accept':'application/json'},
+      body: JSON.stringify({ guid, folder_id, note }),
+      credentials: 'same-origin'
+    });
+  }
+
+  document.addEventListener('click', async (e) => {
+    const openSave = e.target.closest('[data-open-save]');
+    if (openSave) {
+      const card = openSave.closest('[data-guid]');
+      const guid = card?.getAttribute('data-guid');
+      if (!guid) return;
+
+      dlgSave.querySelector('input[name="guid"]').value = guid;
+
+      const select = document.getElementById('saveFolderSelect');
+      select.innerHTML = '<option value="">— Choose folder —</option>';
+      try {
+        const folders = await loadFolders();
+        (folders || []).forEach(f => {
+          const opt = document.createElement('option');
+          opt.value = f.id;
+          opt.textContent = f.name;
+          select.appendChild(opt);
+        });
+      } catch (err) { console.error(err); }
+      dlgSave.showModal();
+    }
+  });
+
+  document.getElementById('btnCreateFolder')?.addEventListener('click', async (e) => {
+    e.preventDefault();
+    const name = (document.getElementById('newFolderName')?.value || '').trim();
+    if (!name) { alert('Folder name required'); return; }
+    try {
+      const folder = await createFolder(name);
+      const select = document.getElementById('saveFolderSelect');
+      const opt = document.createElement('option');
+      opt.value = folder.id;
+      opt.textContent = folder.name;
+      select.appendChild(opt);
+      select.value = folder.id;
+      document.getElementById('newFolderName').value = '';
+    } catch(err) { alert('Failed to create folder'); }
+  });
+
+  dlgSave?.querySelector('[data-submit]')?.addEventListener('click', async (e) => {
+    e.preventDefault();
+    const guid = dlgSave.querySelector('input[name="guid"]').value;
+    const folder_id = dlgSave.querySelector('select[name="folder_id"]').value || null;
+    const note = dlgSave.querySelector('input[name="note"]').value || null;
+
+    const card = document.querySelector(`[data-guid="${CSS.escape(guid)}"]`);
+    try {
+      const r = await saveItem(guid, folder_id ? Number(folder_id) : null, note);
+      if (r.ok) {
+        showStatus(card, 'Saved to folder ✔');
+        dlgSave.close();
+      } else {
+        const t = await r.text();
+        showStatus(card, 'Save failed: ' + t, false);
+      }
+    } catch (err) {
+      showStatus(card, 'Save failed', false);
+    }
+  });
+  dlgSave?.querySelector('[data-cancel]')?.addEventListener('click', () => dlgSave.close());
+
+  const dlgTag = document.getElementById('dlgTag');
+  async function loadSites() { return jsonFetch(`/api/orgs/${orgId}/sites`); }
+  async function loadOrgControls() { return jsonFetch(`/api/orgs/${orgId}/org-controls`); }
+
+  document.addEventListener('click', async (e) => {
+    const openTag = e.target.closest('[data-open-tag]');
+    if (openTag) {
+      const card = openTag.closest('[data-guid]');
+      const guid = card?.getAttribute('data-guid');
+      if (!guid) return;
+
+      dlgTag.querySelector('input[name="guid"]').value = guid;
+
+      const siteSel = document.getElementById('tagSiteSelect');
+      const ctrlSel = document.getElementById('tagControlSelect');
+      siteSel.innerHTML = '<option value="">Corporate</option>';
+      ctrlSel.innerHTML = '<option value="">— Choose control —</option>';
+
+      try {
+        const [sites, ctrls] = await Promise.all([loadSites(), loadOrgControls()]);
+        (sites || []).forEach(s => {
+          const opt = document.createElement('option'); opt.value = s.id; opt.textContent = s.name; siteSel.appendChild(opt);
+        });
+        (ctrls || []).forEach(c => {
+          const opt = document.createElement('option');
+          opt.value = c.id;
+          opt.textContent = (c.code ? c.code + ' — ' : '') + c.title + (c.site_name ? ` (${c.site_name})` : '');
+          ctrlSel.appendChild(opt);
+        });
+      } catch (err) { console.error(err); }
+
+      dlgTag.showModal();
+    }
+  });
+
+  dlgTag?.querySelector('[data-submit]')?.addEventListener('click', async (e) => {
+    e.preventDefault();
+    const guid = dlgTag.querySelector('input[name="guid"]').value;
+    const site_id = dlgTag.querySelector('select[name="site_id"]').value || null;
+    const org_control_id = dlgTag.querySelector('select[name="org_control_id"]').value || null;
+
+    const card = document.querySelector(`[data-guid="${CSS.escape(guid)}"]`);
+    try {
+      const res = await fetch(`/api/items/${encodeURIComponent(guid)}/tag`, {
+        method: 'POST',
+        headers: { 'Content-Type':'application/json', 'Accept':'application/json' },
+        body: JSON.stringify({
+          org_id: orgId,
+          site_id: site_id ? Number(site_id) : null,
+          org_control_id: org_control_id ? Number(org_control_id) : null
+        }),
+        credentials: 'same-origin'
+      });
+      if (res.ok) {
+        showStatus(card, 'Tagged ✔');
+        dlgTag.close();
+      } else {
+        const t = await res.text();
+        showStatus(card, 'Tag failed: ' + t, false);
+      }
+    } catch (err) {
+      showStatus(card, 'Tag failed', false);
+    }
+  });
+})();
+</script>
+{% endblock %}

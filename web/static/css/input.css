@@ -1,0 +1,16 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Optional helper classes using @apply */
+@layer components {
+  .btn { @apply inline-flex items-center justify-center rounded-lg border px-3 py-1.5 text-sm transition; }
+  .btn-primary { @apply btn border-emerald-200 text-white bg-emerald-600 hover:bg-emerald-700; }
+  .btn-muted { @apply btn border-gray-200 text-gray-700 hover:bg-gray-50; }
+  .btn-danger { @apply btn border-red-200 text-red-700 hover:bg-red-50; }
+
+  .card { @apply bg-white border border-gray-100 rounded-2xl p-4 shadow-sm; }
+  .panel { @apply bg-white border border-gray-100 rounded-2xl p-4; }
+  .pill { @apply inline-flex items-center rounded-full border border-gray-200 px-2 py-0.5 text-xs text-gray-600; }
+  .muted { @apply text-gray-500; }
+}

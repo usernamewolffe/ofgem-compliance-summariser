@@ -1,0 +1,41 @@
+{
+  "name": "ofgem-compliance-summariser",
+  "version": "1.0.0",
+  "description": "A tiny prototype that: - fetches Ofgem publications/news feeds, - extracts article text, - summarises it (OpenAI optional), - stores results in SQLite, - serves a simple JSON API (FastAPI).",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/usernamewolffe/ofgem-compliance-summariser.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/usernamewolffe/ofgem-compliance-summariser/issues"
+  },
+  "homepage": "https://github.com/usernamewolffe/ofgem-compliance-summariser#readme",
+  "devDependencies": {
+    "autoprefixer": "^10.4.22",
+    "postcss": "^8.5.6",
+    "tailwindcss": "^3.4.15"
+  },
+  "dependencies": {
+    "baseline-browser-mapping": "^2.8.27",
+    "browserslist": "^4.28.0",
+    "caniuse-lite": "^1.0.30001754",
+    "electron-to-chromium": "^1.5.250",
+    "escalade": "^3.2.0",
+    "fraction.js": "^5.3.4",
+    "nanoid": "^3.3.11",
+    "node-releases": "^2.0.27",
+    "normalize-range": "^0.1.2",
+    "picocolors": "^1.1.1",
+    "postcss-value-parser": "^4.2.0",
+    "source-map-js": "^1.2.1",
+    "update-browserslist-db": "^1.1.4"
+  }
+}

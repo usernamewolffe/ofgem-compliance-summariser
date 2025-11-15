@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Ofgem Updates – Summaries</title>
+  <style>
+    body{font:16px/1.5 system-ui,Segoe UI,Roboto,Arial,sans-serif;margin:0;background:#0b0c0c;color:#fff}
+    header{position:sticky;top:0;background:#111;padding:12px 16px;border-bottom:1px solid #333;z-index:1}
+    .wrap{max-width:980px;margin:0 auto;padding:16px}
+    input,select{background:#0f0f0f;border:1px solid #333;color:#fff;padding:8px;border-radius:8px}
+    .grid{display:grid;gap:12px}
+    .card{background:#141414;border:1px solid #222;border-radius:14px;padding:14px}
+    .title{font-weight:600;margin:0 0 6px}
+    .meta{font-size:13px;color:#c7c7c7;margin-bottom:8px}
+    .tags{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+    .tag{font-size:12px;border:1px solid #333;border-radius:999px;padding:2px 8px;color:#cfe3ff;background:#0f0f18}
+    .tag-reg{background:#002a8d;color:#fff;font-weight:600;text-transform:uppercase;border-color:#0036b8}
+    .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+    a{color:#9ecbff;text-decoration:none}
+    a:hover{text-decoration:underline}
+    footer{opacity:.7;font-size:13px;margin-top:24px}
+    .btn{border:1px solid #333;background:#0f0f0f;color:#fff;border-radius:10px;padding:8px 10px;cursor:pointer}
+    .star{cursor:pointer;font-size:18px;user-select:none;line-height:1}
+    .star.saved{color:#ffd54a}
+    .pill{font-size:12px;border:1px solid #333;border-radius:999px;padding:2px 8px;margin-left:6px}
+    #loading{opacity:.7}
+
+    /* Tabs */
+    .tabs{display:flex;gap:8px;align-items:center;margin-bottom:8px}
+    .tab{border:1px solid #333;background:#0f0f0f;color:#ddd;border-radius:999px;padding:6px 12px;cursor:pointer}
+    .tab[aria-selected="true"]{background:#1b1b1b;color:#fff;border-color:#555}
+  </style>
+</head>
+<body>
+  <header>
+    <div class="wrap">
+      <div class="tabs" role="tablist" aria-label="Views">
+        <button id="tabAll"   class="tab" role="tab" aria-selected="true">All</button>
+        <button id="tabSaved" class="tab" role="tab" aria-selected="false">Saved <span id="savedCount" class="pill">0</span></button>
+        <div style="flex:1"></div>
+        <button id="exportSaved" class="btn">Export saved (CSV)</button>
+      </div>
+      <div class="row">
+        <input id="q" placeholder="Search title or summary…" style="flex:2" />
+        <select id="tag" style="flex:1;min-width:180px">
+          <option value="">All tags</option>
+        </select>
+      </div>
+      <div id="loading"></div>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <div id="list" class="grid"></div>
+    <footer id="count"></footer>
+  </main>
+
+  <script>
+  const JSON_URL = "/feed.json";   // same-origin API
+
+  // --- Local saved state (per browser) ---
+  const SAVED_KEY = "ofgem_saved_guids_v1";
+  function loadSaved(){ try{ return new Set(JSON.parse(localStorage.getItem(SAVED_KEY)||"[]")); }catch{ return new Set(); } }
+  function saveSaved(set){ localStorage.setItem(SAVED_KEY, JSON.stringify([...set])); }
+  const saved = loadSaved();
+
+  const state = { items: [], filtered: [], view: "all" }; // view: 'all' | 'saved'
+  const REGULATORS = ["OFGEM","DESNZ","ICO","NCSC","OFCOM"];
+
+  function uniq(arr){ return [...new Set(arr)]; }
+  function fmtDate(s){
+    if(!s) return "";
+    const d = new Date(s);
+    return d.toLocaleDateString(undefined,{year:'numeric',month:'short',day:'2-digit'});
+  }
+  function itemGuid(it){ return it.guid || it.link || it.title || ""; }
+
+  function setView(view){
+    state.view = view;
+    document.getElementById("tabAll").setAttribute("aria-selected", view==="all" ? "true" : "false");
+    document.getElementById("tabSaved").setAttribute("aria-selected", view==="saved" ? "true" : "false");
+    applyFilters();
+  }
+
+  function render() {
+    const list = document.getElementById("list");
+    list.innerHTML = "";
+    for (const it of state.filtered) {
+      const all = (it.tags||"").split(",").map(t=>t.trim()).filter(Boolean);
+      // sort tags with regulators first
+      all.sort((a,b)=>{
+        const A=a.toUpperCase(), B=b.toUpperCase();
+        const ia=REGULATORS.indexOf(A), ib=REGULATORS.indexOf(B);
+        if (ia>=0 && ib<0) return -1;
+        if (ib>=0 && ia<0) return 1;
+        return A.localeCompare(B);
+      });
+
+      const guid = itemGuid(it);
+      const isSaved = saved.has(guid);
+
+      const el = document.createElement("div");
+      el.className = "card";
+      el.innerHTML = `
+        <div style="display:flex;justify-content:space-between;gap:8px;align-items:start">
+          <h3 class="title" style="margin:0">
+            <a href="${it.link}" target="_blank" rel="noopener">${it.title || "Untitled"}</a>
+          </h3>
+          <span class="star ${isSaved ? "saved":""}" title="${isSaved ? "Unsave":"Save"}" data-guid="${guid}">${isSaved ? "★" : "☆"}</span>
+        </div>
+        <div class="meta">${fmtDate(it.published_at)} · ${it.source || ""}</div>
+        <div>${(it.summary||"").replace(/\n/g,"<br>")}</div>
+        <div class="tags">
+          ${all.map(t=>{
+            const cls = REGULATORS.includes(t.toUpperCase()) ? "tag tag-reg" : "tag";
+            return `<span class="${cls}">${t}</span>`;
+          }).join("")}
+        </div>
+      `;
+      list.appendChild(el);
+    }
+    document.getElementById("count").textContent = `${state.filtered.length} item(s)`;
+    document.getElementById("savedCount").textContent = saved.size;
+
+    // wire star clicks
+    list.querySelectorAll(".star").forEach(st => {
+      st.addEventListener("click", () => {
+        const guid = st.getAttribute("data-guid");
+        if (!guid) return;
+        if (saved.has(guid)) saved.delete(guid); else saved.add(guid);
+        saveSaved(saved);
+        // keep current view; re-filter to update UI + counts
+        applyFilters();
+      });
+    });
+  }
+
+  function applyFilters() {
+    const q = document.getElementById("q").value.trim().toLowerCase();
+    const t = document.getElementById("tag").value;
+    const base = state.items.filter(it => {
+      const inQ = !q || (it.title||"").toLowerCase().includes(q) || (it.summary||"").toLowerCase().includes(q);
+      const tags = (it.tags||"").split(",").map(s=>s.trim()).filter(Boolean);
+      const inT = !t || tags.includes(t);
+      return inQ && inT;
+    });
+    if (state.view === "saved") {
+      state.filtered = base.filter(it => saved.has(itemGuid(it)));
+    } else {
+      state.filtered = base;
+    }
+    render();
+  }
+
+  function exportSavedCSV(){
+    const header = ["title","link","published_at","tags","source","summary"];
+    const rows = state.items.filter(it => saved.has(itemGuid(it)));
+    const csv = [header.join(",")].concat(rows.map(r => {
+      const vals = [
+        r.title||"",
+        r.link||"",
+        r.published_at||"",
+        (r.tags||"").replaceAll(",", ";"),
+        r.source||"",
+        (r.summary||"").replaceAll("\n"," ").replaceAll(",",";")
+      ];
+      return vals.map(v => `"${(v+"").replaceAll('"','""')}"`).join(",");
+    })).join("\n");
+    const blob = new Blob([csv], {type: "text/csv"});
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "saved_ofgem_items.csv";
+    a.click();
+    URL.revokeObjectURL(a.href);
+  }
+
+  async function boot() {
+    const loading = document.getElementById("loading");
+    loading.textContent = "Loading…";
+    try {
+      const res = await fetch(JSON_URL, {cache:"no-store"});
+      const data = await res.json();
+      state.items = data;
+
+      // build tag dropdown with regulators first
+      const allTags = uniq(state.items.flatMap(it => (it.tags||"").split(",").filter(Boolean)));
+      allTags.sort((a,b)=>{
+        const A=a.toUpperCase(), B=b.toUpperCase();
+        const ia=REGULATORS.indexOf(A), ib=REGULATORS.indexOf(B);
+        if (ia>=0 && ib<0) return -1;
+        if (ib>=0 && ia<0) return 1;
+        return A.localeCompare(B);
+      });
+      const tagSel = document.getElementById("tag");
+      for (const tag of allTags) {
+        const opt = document.createElement("option");
+        opt.value = tag; opt.textContent = tag;
+        tagSel.appendChild(opt);
+      }
+      applyFilters();
+    } finally {
+      loading.textContent = "";
+    }
+  }
+
+  // Events
+  document.getElementById("q").addEventListener("input", applyFilters);
+  document.getElementById("tag").addEventListener("change", applyFilters);
+  document.getElementById("exportSaved").addEventListener("click", exportSavedCSV);
+  document.getElementById("tabAll").addEventListener("click", () => setView("all"));
+  document.getElementById("tabSaved").addEventListener("click", () => setView("saved"));
+
+  // Go!
+  boot();
+  </script>
+</body>
+</html>

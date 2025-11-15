@@ -1,0 +1,197 @@
+name: Daily scrape + precompute (JSON publish)
+
+on:
+  schedule:
+    - cron: "15 06 * * *"   # 06:15 UTC daily
+  workflow_dispatch:
+  push:
+    paths:
+      - "scraper/**"
+      - "summariser/**"
+      - ".github/workflows/scrape.yml"
+      - "tools/export_json.py"
+      - "tools/precompute_summaries.py"
+      - "requirements.txt"
+      - "main.py"
+      - "storage/**"
+      - "api/**"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: scrape-precompute-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  run:
+    name: Scrape & export
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      PYTHONUNBUFFERED: "1"
+      PYTHONPATH: ${{ github.workspace }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+    steps:
+      - name: Checkout (main)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: main
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          else
+            pip install fastapi uvicorn jinja2 python-dotenv openai "httpx<0.28" \
+              requests feedparser beautifulsoup4 pypdf tenacity passlib python-multipart itsdangerous
+          fi
+          python -c "import sys; print('Python:', sys.version)"
+
+      - name: Sanity check imports
+        run: |
+          python - <<'PY'
+          import importlib
+          for m in ['storage.db','scraper.ofgem','summariser.model']:
+              importlib.import_module(m)
+              print('OK import', m)
+          print('All imports OK')
+          PY
+
+      - name: Assert DB.exists present
+        run: |
+          python - <<'PY'
+          from storage.db import DB
+          db = DB("ofgem.db")
+          print("Has exists():", hasattr(db, "exists"))
+          assert hasattr(db, "exists"), "DB.exists is missing on CI"
+          PY
+
+      - name: Scrape last 1 day
+        run: python main.py --since 1
+
+      - name: Upload ofgem.db artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ofgem-db
+          path: ofgem.db
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Export JSON
+        run: |
+          mkdir -p public
+          python tools/export_json.py
+          test -f public/items.json || (echo "::error:: public/items.json was not created" && exit 1)
+          # Stash a copy for branch switch
+          cp public/items.json "$RUNNER_TEMP/items.json"
+          ls -lh public/items.json | cat
+          head -40 public/items.json || true
+
+      - name: Upload JSON artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: items-json
+          path: public/items.json
+          retention-days: 7
+
+  precompute:
+    name: Precompute AI summaries & publish
+    needs: run
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      PYTHONUNBUFFERED: "1"
+      PYTHONPATH: ${{ github.workspace }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+    steps:
+      - name: Checkout (main)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: main
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          else
+            pip install fastapi uvicorn jinja2 python-dotenv openai "httpx<0.28" \
+              requests feedparser beautifulsoup4 pypdf tenacity passlib python-multipart itsdangerous
+          fi
+
+      - name: Download ofgem.db from previous job
+        uses: actions/download-artifact@v4
+        with:
+          name: ofgem-db
+          path: artifacts/ofgem-db
+
+      - name: Download items.json from previous job
+        uses: actions/download-artifact@v4
+        with:
+          name: items-json
+          path: artifacts/items-json
+
+      - name: Prepare inputs
+        run: |
+          set -euo pipefail
+          cp artifacts/ofgem-db/ofgem.db ./ofgem.db
+          mkdir -p public
+          cp artifacts/items-json/items.json public/items.json
+          ls -lh ofgem.db
+          ls -lh public/items.json
+
+      - name: Precompute AI summaries into DB
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          PYTHONPATH=. python tools/precompute_summaries.py
+
+      - name: Link controls
+        run: PYTHONPATH=. python tools/link_controls.py
+
+
+      - name: Export updated JSON
+        run: |
+          mkdir -p public
+          PYTHONPATH=. python tools/export_json.py
+          test -f public/items.json
+
+      - name: Push items.json to data branch
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+      
+          # Make sure the data branch exists locally
+          git fetch origin data || true
+          git checkout -B data
+          git reset --hard
+      
+          # Ensure the export is present
+          test -f public/items.json
+      
+          # Commit only if there are changes
+          git add public/items.json
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+          else
+            git commit -m "Precomputed items.json ($(date -u +'%Y-%m-%dT%H:%M:%SZ'))"
+            git push origin data --force
+          fi
+

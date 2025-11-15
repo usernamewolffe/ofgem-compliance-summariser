@@ -1,0 +1,198 @@
+{% extends "base.html" %}
+{% block title %}Organisation Controls{% endblock %}
+
+{% block content %}
+
+<!-- Page header -->
+<div class="page-title" style="justify-content:space-between; align-items:center;">
+  <h1>{% if org %}{{ org.name }}{% else %}Organisation {{ org_id }}{% endif %} — Controls</h1>
+  <div style="display:flex; gap:.5rem;">
+    <a class="btn small" href="/orgs/{{ org_id }}/sites">Sites</a>
+    <button class="btn primary small" id="btnAddSite" type="button">+ Add site</button>
+    <button class="btn small" id="btnAddControl" type="button">+ Add control</button>
+  </div>
+</div>
+
+<!-- Two-column layout: sidebar (sites) + main (controls) -->
+<div class="wrap">
+  <!-- SIDEBAR -->
+  <aside class="panel" style="padding:1rem;">
+    <h3 style="margin:0 0 .5rem;">Sites</h3>
+    {% if sites and sites|length %}
+      <nav class="stack">
+        <a href="/orgs/{{ org_id }}/controls" class="tag" style="display:inline-block;">Corporate</a>
+        {% for s in sites %}
+          <a href="/orgs/{{ org_id }}/controls?site={{ s.id }}" class="tag" style="display:inline-block;">
+            {{ s.name }}
+          </a>
+        {% endfor %}
+      </nav>
+    {% else %}
+      <p class="muted" style="margin:0;">No sites yet.</p>
+    {% endif %}
+  </aside>
+
+  <!-- MAIN CONTENT -->
+  <section class="panel" style="padding:1.25rem; background:#f9fbf9; border-radius:12px;">
+    {% if grouped and grouped|length %}
+      {% for site_name, rows in grouped.items() %}
+        <h3 style="margin:1rem 0 .5rem; font-size:1rem; font-weight:600;">{{ site_name }}</h3>
+
+        <!-- Responsive grid of control cards -->
+        <ul class="cards controls-grid">
+          {% for c in rows %}
+            <li class="card">
+              <div style="display:flex; justify-content:space-between; align-items:baseline; flex-wrap:wrap; gap:.5rem;">
+                <div>
+                  <strong style="font-size:.95rem;">{{ c.code or '—' }}</strong>
+                  <span style="margin-left:.5rem; font-weight:600; font-size:1rem;">{{ c.title }}</span>
+                </div>
+                <span class="muted" style="font-size:.85rem;">{{ c.status or 'Active' }}</span>
+              </div>
+
+              {% if c.description %}
+                <div class="muted" style="font-size:.9rem; margin-top:.35rem;">
+                  {{ c.description }}
+                </div>
+              {% endif %}
+
+              {% if c.tags and c.tags|length %}
+                <div style="display:flex; flex-wrap:wrap; gap:.35rem; margin-top:.5rem;">
+                  {% for t in c.tags %}
+                    <span class="tag">{{ t }}</span>
+                  {% endfor %}
+                </div>
+              {% endif %}
+
+              <div style="display:flex; justify-content:space-between; align-items:center; margin-top:.75rem; font-size:.85rem;">
+                <span class="muted">
+                  {% if c.owner_email %}
+                    Owner: {{ c.owner_email }}
+                  {% else %}
+                    <span class="muted">No owner assigned</span>
+                  {% endif %}
+                </span>
+                {% if c.risk %}
+                  <span style="background:#fff5f5; border:1px solid #f0c0c0; border-radius:8px; padding:.2rem .5rem; font-size:.8rem;">
+                    Risk: {{ c.risk }}
+                  </span>
+                {% endif %}
+              </div>
+            </li>
+          {% endfor %}
+        </ul>
+      {% endfor %}
+    {% else %}
+      <p class="muted">No organisation controls yet. Use “Add control” to create one.</p>
+    {% endif %}
+  </section>
+</div>
+
+<!-- Add Site dialog -->
+<dialog id="dlgAddSite" style="border:none; border-radius:12px; padding:0; max-width:960px; width:96%;">
+  <form method="post" action="/orgs/{{ org_id }}/sites/new"
+        style="padding:1rem 1rem 1.2rem; background:#fff; border:1px solid var(--line); border-radius:12px;">
+    <h3 style="margin:.25rem 0 1rem;">Add site</h3>
+    <div class="stack">
+      <label>Site name
+        <input type="text" name="name" required placeholder="e.g. Leeds CHP Site">
+      </label>
+      <label>Code (optional)
+        <input type="text" name="code" placeholder="e.g. LEE-CHP-01">
+      </label>
+      <label>Location (optional)
+        <input type="text" name="location" placeholder="e.g. Leeds, UK">
+      </label>
+    </div>
+    <div style="display:flex; gap:.5rem; justify-content:flex-end; margin-top:1rem;">
+      <button type="button" class="btn" id="btnCancelSite">Cancel</button>
+      <button type="submit" class="btn primary">Create site</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Add Control dialog -->
+<dialog id="dlgAddControl" style="border:none; border-radius:12px; padding:0; max-width:960px; width:96%;">
+  <form method="post" action="/orgs/{{ org_id }}/controls/new"
+        style="padding:1rem 1rem 1.2rem; background:#fff; border:1px solid var(--line); border-radius:12px;">
+    <h3 style="margin:.25rem 0 1rem;">Add control</h3>
+
+    <div class="stack">
+      <label>Site
+        <select name="site_id">
+          <option value="">(Corporate)</option>
+          {% for s in sites %}
+            <option value="{{ s.id }}">{{ s.name }}</option>
+          {% endfor %}
+        </select>
+      </label>
+
+      <label>Code (optional)
+        <input type="text" name="code" placeholder="e.g. IR-01">
+      </label>
+
+      <label>Title
+        <input type="text" name="title" required placeholder="e.g. Incident response plan maintained and tested">
+      </label>
+
+      <label>Description
+        <textarea name="description" rows="4" placeholder="Short description of the control..."></textarea>
+      </label>
+
+      <label>Owner email (optional)
+        <input type="email" name="owner_email" placeholder="owner@example.com">
+      </label>
+
+      <label>Tags (comma-separated)
+        <input type="text" name="tags" placeholder="Incident, Cyber, CAF-D1">
+      </label>
+
+      <div style="display:grid; grid-template-columns: 1fr 1fr; gap:.5rem;">
+        <label>Status
+          <select name="status">
+            <option>Active</option>
+            <option>Planned</option>
+            <option>Retired</option>
+          </select>
+        </label>
+        <label>Risk (optional)
+          <input type="text" name="risk" placeholder="e.g. High / Medium / Low">
+        </label>
+      </div>
+
+      <div style="display:grid; grid-template-columns: 1fr 1fr; gap:.5rem;">
+        <label>Review frequency (days)
+          <input type="number" name="review_frequency_days" min="0" step="1" placeholder="e.g. 180">
+        </label>
+        <label>Next review at (date)
+          <input type="date" name="next_review_at">
+        </label>
+      </div>
+    </div>
+
+    <div style="display:flex; gap:.5rem; justify-content:flex-end; margin-top:1rem;">
+      <button type="button" class="btn" id="btnCancelControl">Cancel</button>
+      <button type="submit" class="btn primary">Create control</button>
+    </div>
+  </form>
+</dialog>
+
+<script>
+  (function(){
+    // Add Site dialog wiring
+    const dlgSite = document.getElementById('dlgAddSite');
+    const openSite = document.getElementById('btnAddSite');
+    const cancelSite = document.getElementById('btnCancelSite');
+    if (openSite && dlgSite) openSite.addEventListener('click', () => dlgSite.showModal());
+    if (cancelSite && dlgSite) cancelSite.addEventListener('click', () => dlgSite.close());
+
+    // Add Control dialog wiring
+    const dlgCtrl = document.getElementById('dlgAddControl');
+    const openCtrl = document.getElementById('btnAddControl');
+    const cancelCtrl = document.getElementById('btnCancelControl');
+    if (openCtrl && dlgCtrl) openCtrl.addEventListener('click', () => dlgCtrl.showModal());
+    if (cancelCtrl && dlgCtrl) cancelCtrl.addEventListener('click', () => dlgCtrl.close());
+  })();
+</script>
+
+{% endblock %}

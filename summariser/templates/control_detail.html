@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}Control: {{ control.title }}{% endblock %}
+
+{% block content %}
+  <div class="page-title">
+    <h1>{{ control.title }}</h1>
+  </div>
+
+  {% if control.description %}
+    <p class="muted" style="max-width:80ch">{{ control.description }}</p>
+  {% endif %}
+
+  <h3 style="margin-top:1rem;">Recent linked items</h3>
+
+  <!-- responsive, full-width grid -->
+  <ul class="cards controls-grid">
+    {% for e in items %}
+      <li class="card" style="display:flex; flex-direction:column; gap:.4rem;">
+        <h4 style="margin:0;">
+          <a href="{{ e.link }}" target="_blank" rel="noopener">{{ e.title }}</a>
+        </h4>
+        <div class="muted">{{ e.source }} • {{ e.published_at }}</div>
+        {% set s = e.ai_summary or '' %}
+        {% if s %}
+          <p style="margin:.2rem 0 0">{{ s[:320] }}{% if s|length > 320 %}…{% endif %}</p>
+        {% endif %}
+      </li>
+    {% endfor %}
+  </ul>
+{% endblock %}

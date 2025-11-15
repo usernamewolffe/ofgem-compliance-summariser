@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% block title %}Edit {{ site.name }} — {{ org.name }}{% endblock %}
+
+{% block content %}
+<div class="mx-auto max-w-3xl px-4 sm:px-6 lg:px-8 py-4">
+  <nav class="text-xs text-gray-500 mb-3">
+    <a href="/orgs/{{ org_id }}" class="hover:underline">{{ org.name }}</a>
+    /
+    <a href="/orgs/{{ org_id }}/sites/{{ site_id }}" class="hover:underline">{{ site.name }}</a>
+    / <span>Edit</span>
+  </nav>
+
+  <h1 class="text-xl font-semibold">Edit site</h1>
+  <p class="text-sm text-gray-600 mt-1">Update the basic details for this site.</p>
+
+  <form method="post" class="mt-4 space-y-4 bg-white border border-gray-100 rounded-xl p-4">
+    <div>
+      <label class="block text-sm text-gray-700">Name</label>
+      <input type="text" name="name" value="{{ site.name or '' }}"
+             class="mt-1 w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-600 focus:outline-none" required>
+    </div>
+
+    {% if fields.code %}
+    <div>
+      <label class="block text-sm text-gray-700">Code</label>
+      <input type="text" name="code" value="{{ site.code or '' }}"
+             class="mt-1 w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-600 focus:outline-none">
+    </div>
+    {% endif %}
+
+    {% if fields.city %}
+    <div>
+      <label class="block text-sm text-gray-700">City</label>
+      <input type="text" name="city" value="{{ site.city or '' }}"
+             class="mt-1 w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-600 focus:outline-none">
+    </div>
+    {% endif %}
+
+    {% if fields.address %}
+    <div>
+      <label class="block text-sm text-gray-700">Address</label>
+      <textarea name="address" rows="3"
+                class="mt-1 w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-600 focus:outline-none">{{ site.address or '' }}</textarea>
+    </div>
+    {% endif %}
+
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+      {% if fields.phone %}
+      <div>
+        <label class="block text-sm text-gray-700">Phone</label>
+        <input type="text" name="phone" value="{{ site.phone or '' }}"
+               class="mt-1 w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-600 focus:outline-none">
+      </div>
+      {% endif %}
+
+      {% if fields.email %}
+      <div>
+        <label class="block text-sm text-gray-700">Email</label>
+        <input type="email" name="email" value="{{ site.email or '' }}"
+               class="mt-1 w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-600 focus:outline-none">
+      </div>
+      {% endif %}
+    </div>
+
+    <div class="flex gap-2 justify-end">
+      <a class="px-3 py-1.5 text-sm border rounded-md hover:bg-gray-50"
+         href="/orgs/{{ org_id }}/sites/{{ site_id }}">Cancel</a>
+      <button class="px-3 py-1.5 text-sm border rounded-md bg-emerald-600 text-white hover:bg-emerald-700"
+              type="submit">Save changes</button>
+    </div>
+  </form>
+</div>
+{% endblock %}

@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% block title %}{{ site.name }} — Site Overview{% endblock %}
+
+{% block content %}
+<div class="mx-auto max-w-6xl px-4 sm:px-6 lg:px-8 py-4 grid gap-4 lg:grid-cols-[320px_1fr]">
+
+  <!-- Sidebar: Site details -->
+  <aside class="rounded-xl border border-gray-100 p-4 bg-white">
+    <nav class="text-xs text-gray-500 mb-2">
+      <a href="/orgs/{{ org.id }}" class="hover:underline">{{ org.name }}</a> / <span>{{ site.name }}</span>
+    </nav>
+    <h2 class="text-lg font-semibold">{{ site.name }}</h2>
+    <p class="text-sm text-gray-600 mt-1">Site details</p>
+
+    <dl class="mt-3 space-y-2 text-sm">
+      {% if site.address %}<div><dt class="text-gray-500">Address</dt><dd>{{ site.address }}</dd></div>{% endif %}
+      {% if site.phone %}<div><dt class="text-gray-500">Phone</dt><dd>{{ site.phone }}</dd></div>{% endif %}
+      {% if site.email %}<div><dt class="text-gray-500">Email</dt><dd><a href="mailto:{{ site.email }}" class="hover:underline">{{ site.email }}</a></dd></div>{% endif %}
+    </dl>
+
+    <!-- Site quick links -->
+    <div class="mt-4 grid grid-cols-2 gap-2 text-sm">
+      <a href="/orgs/{{ org_id }}/sites/{{ site_id }}/controls" class="px-3 py-2 border rounded-md hover:bg-gray-50 flex justify-between">
+        Controls <span class="text-gray-500">{{ counts.controls }}</span>
+      </a>
+      <a href="/orgs/{{ org_id }}/sites/{{ site_id }}/risks" class="px-3 py-2 border rounded-md hover:bg-gray-50 flex justify-between">
+        Risks <span class="text-gray-500">{{ counts.risks }}</span>
+      </a>
+    </div>
+  </aside>
+
+  <!-- Main -->
+  <main class="space-y-6">
+    <!-- People -->
+    <section class="rounded-xl border border-gray-100 bg-white p-4">
+      <div class="flex items-center justify-between">
+        <h3 class="text-base font-semibold">Key contacts at this site</h3>
+        <a class="text-sm hover:underline" href="/orgs/{{ org_id }}/sites/{{ site_id }}/members">Manage</a>
+      </div>
+      {% if people and people|length %}
+        <ul class="mt-3 grid gap-2">
+          {% for p in people %}
+            <li class="p-3 rounded-lg border">
+              <div class="text-sm">
+                <span class="font-medium">{{ p.name }}</span>
+                {% if p.role %}<span class="text-gray-500"> — {{ p.role }}</span>{% endif %}
+                {% if p.email %} · <a href="mailto:{{ p.email }}" class="hover:underline">{{ p.email }}</a>{% endif %}
+              </div>
+              {% if p.is_key_personnel %}
+                <div class="text-xs text-emerald-700 mt-1">Key personnel</div>
+              {% endif %}
+            </li>
+          {% endfor %}
+        </ul>
+      {% else %}
+        <p class="text-sm text-gray-500 mt-2">No site contacts recorded yet.</p>
+      {% endif %}
+    </section>
+
+    <!-- Shortcuts -->
+    <section class="rounded-xl border border-gray-100 bg-white p-4">
+      <h3 class="text-base font-semibold">Next actions</h3>
+      <div class="mt-3 flex flex-wrap gap-2">
+        <a class="px-3 py-1.5 text-sm border rounded-md hover:bg-gray-50" href="/orgs/{{ org_id }}/sites/{{ site_id }}/controls">View controls</a>
+        <a class="px-3 py-1.5 text-sm border rounded-md hover:bg-gray-50" href="/orgs/{{ org_id }}/sites/{{ site_id }}/risks">View risks</a>
+        <a class="px-3 py-1.5 text-sm border rounded-md hover:bg-gray-50" href="/summaries?q={{ org.name|urlencode }}%20{{ site.name|urlencode }}">Find related news</a>
+      </div>
+    </section>
+  </main>
+</div>
+{% endblock %}
