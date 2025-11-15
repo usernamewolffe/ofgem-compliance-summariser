@@ -1,10 +1,11 @@
 # api/server.py
+
+# ---------------------------------------------------------------------------
+# Environment & imports
+# ---------------------------------------------------------------------------
 from dotenv import load_dotenv
 load_dotenv()
 
-# ---------------------------------------------------------------------------
-# Imports
-# ---------------------------------------------------------------------------
 import os
 import csv
 import io
@@ -43,12 +44,13 @@ from starlette.middleware.sessions import SessionMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from passlib.context import CryptContext
 from pydantic import BaseModel
+from openai import OpenAI
 
 from tools.email_utils import send_article_email
 from storage.db import DB
 
 # ---------------------------------------------------------------------------
-# Constants & Paths
+# Constants & paths
 # ---------------------------------------------------------------------------
 TOPIC_TAGS = [
     "CAF/NIS",
@@ -60,9 +62,6 @@ TOPIC_TAGS = [
     "Penalty",
 ]
 
-from pathlib import Path
-import os
-
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 # Always use the DB in this repo:
@@ -70,7 +69,6 @@ SQLITE_DB_PATH = (BASE_DIR / "ofgem.db").as_posix()
 
 print(f"##### server.py loaded from: {__file__} #####")
 print(f"##### USING DB FILE: {SQLITE_DB_PATH} #####")
-
 
 PUBLIC_DIR = BASE_DIR / "public"
 TEMPLATES_DIR = BASE_DIR / "summariser" / "templates"
@@ -100,9 +98,7 @@ templates.env.globals["urlencode"] = _urlencode
 # ---------------------------------------------------------------------------
 # DB wrapper + SQLite helpers
 # ---------------------------------------------------------------------------
-# Always use the same DB file
 db = DB(SQLITE_DB_PATH)
-
 _sqlite_conn: Optional[sqlite3.Connection] = None
 
 
@@ -123,7 +119,6 @@ def _get_sqlite_conn() -> sqlite3.Connection:
 def _sql_exec(sql: str, params: Tuple = ()) -> None:
     """
     Generic 'execute' helper.
-
     Uses DB.exec/execute if the DB wrapper exposes it; otherwise
     falls back to a raw sqlite connection.
     """
@@ -162,6 +157,25 @@ def _sql_one(sql: str, params: Tuple = ()) -> Optional[dict]:
     cur = conn.execute(sql, params)
     row = cur.fetchone()
     return dict(row) if row else None
+
+
+def _sql_all_safe(q: str, params: Tuple = ()) -> List[dict]:
+    try:
+        return _sql_all(q, params)
+    except Exception:
+        return []
+
+
+def _sql_one_safe(q: str, params: Tuple = ()) -> Optional[dict]:
+    try:
+        return _sql_one(q, params)
+    except Exception:
+        return None
+
+
+def _sql_many(*args, **kwargs):
+    # Simple alias; helps keep call sites readable
+    return _sql_all(*args, **kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -455,6 +469,7 @@ def _ensure_users_tables():
         """
     )
 
+
 def _ensure_org_risk_tables():
     """
     Make sure the new junction tables for org risks exist.
@@ -513,6 +528,13 @@ def _startup():
 # ---------------------------------------------------------------------------
 # Org resolution helpers (for header + routes)
 # ---------------------------------------------------------------------------
+def _org_name_by_id(org_id: Optional[int]) -> Optional[str]:
+    if org_id is None:
+        return None
+    row = _sql_one("SELECT name FROM orgs WHERE id = ?", (int(org_id),))
+    return row["name"] if row else f"Organisation {org_id}"
+
+
 def resolve_org_id(request: Request) -> int:
     """
     Priority:
@@ -553,7 +575,6 @@ def resolve_org_id(request: Request) -> int:
             request.session["org_id"] = oid
             return oid
 
-    # Use the same global db instance
     orgs = db.list_orgs()
     if len(orgs) == 1:
         oid = int(orgs[0]["id"])
@@ -573,13 +594,6 @@ def resolve_org_id_soft(request: Request) -> int | None:
         return None
     except Exception:
         return None
-
-
-def _org_name_by_id(org_id: Optional[int]) -> Optional[str]:
-    if org_id is None:
-        return None
-    row = _sql_one("SELECT name FROM orgs WHERE id = ?", (int(org_id),))
-    return row["name"] if row else f"Organisation {org_id}"
 
 
 # ---------------------------------------------------------------------------
@@ -707,7 +721,40 @@ def summaries_page(
     org_id = resolve_org_id(request)
     org_name = _org_name_by_id(org_id)
 
-    all_items = db.list_items(limit=20000)
+    # Pull items directly from the DB, including ai_summary
+    rows = _sql_many(
+        """
+        SELECT
+            guid,
+            link,
+            title,
+            source,
+            published_at,
+            ai_summary,
+            content,
+            tags,
+            created_at
+        FROM items
+        ORDER BY published_at DESC
+        LIMIT ?
+        """,
+        (20000,),
+    )
+
+    all_items: List[dict] = []
+    for r in rows:
+        e = dict(r)
+        tags_raw = e.get("tags")
+        if isinstance(tags_raw, str):
+            try:
+                e["tags"] = json.loads(tags_raw)
+            except Exception:
+                e["tags"] = []
+        elif isinstance(tags_raw, list):
+            e["tags"] = tags_raw
+        else:
+            e["tags"] = []
+        all_items.append(e)
 
     def in_date_range(dt_str: str) -> bool:
         if not (date_from or date_to):
@@ -728,14 +775,20 @@ def summaries_page(
 
     filtered: List[dict] = []
     for e in all_items:
-        text = f"{e.get('title','')} {e.get('content','')} {e.get('summary','')}".lower()
+        text = " ".join(
+            [
+                str(e.get("title", "")),
+                str(e.get("content", "")),
+                str(e.get("ai_summary", "")),
+            ]
+        ).lower()
+
         if q_lower and q_lower not in text:
             continue
         if not in_date_range(e.get("published_at")):
             continue
 
-        tags_raw = e.get("tags") or []
-        tags = [t.lower() for t in (tags_raw if isinstance(tags_raw, list) else [])]
+        tags = [t.lower() for t in (e.get("tags") or [])]
         if topic_set and not any(t in tags for t in topic_set):
             continue
 
@@ -789,6 +842,19 @@ def summaries_page(
     )
 
 
+@app.get("/api/debug-openai-key")
+def debug_openai_key():
+    key = os.getenv("OPENAI_API_KEY")
+    if not key:
+        return {"has_key": False, "message": "No OPENAI_API_KEY in environment"}
+
+    return {
+        "has_key": True,
+        "prefix": key[:15],
+        "length": len(key),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Org selection
 # ---------------------------------------------------------------------------
@@ -802,20 +868,6 @@ def switch_org(request: Request, org_id: int = Query(...), next: str = Query("/s
 def select_org_page(request: Request):
     orgs = db.list_orgs()
     return render(request, "org_select.html", {"orgs": orgs})
-
-
-def _sql_all_safe(q, params=()):
-    try:
-        return _sql_all(q, params)
-    except Exception:
-        return []
-
-
-def _sql_one_safe(q, params=()):
-    try:
-        return _sql_one(q, params)
-    except Exception:
-        return None
 
 
 @app.get("/orgs/new", response_class=HTMLResponse)
@@ -858,6 +910,9 @@ def org_new_create(
     return RedirectResponse(url=f"/orgs/{new_id}", status_code=303)
 
 
+# ---------------------------------------------------------------------------
+# Organisation + sites helpers
+# ---------------------------------------------------------------------------
 def _org_personnel(org_id: int):
     """
     Returns (key_people, ultimate_owner) from org_members.
@@ -917,18 +972,15 @@ def _org_basic(org_id: int):
 
 
 def _org_sites(org_id: int) -> list[dict]:
-    # Use the global db instance (no new DB() with a different path)
     return db.list_sites(org_id)
 
 
 def _org_counts(org_id: int):
-    # org_controls
     c_org = _sql_one_safe(
         "SELECT COUNT(*) AS n FROM org_controls WHERE org_id = ?",
         (org_id,),
     ) or {"n": 0}
 
-    # org_risks
     try:
         n_org_risks = db.count_org_risks(org_id=org_id)
     except AttributeError:
@@ -938,7 +990,6 @@ def _org_counts(org_id: int):
         ) or {"n": 0}
         n_org_risks = r_org["n"]
 
-    # site_controls
     c_site = _sql_one_safe(
         """
         SELECT COUNT(*) AS n
@@ -949,7 +1000,6 @@ def _org_counts(org_id: int):
         (org_id,),
     ) or {"n": 0}
 
-    # site_risks
     r_site = _sql_one_safe(
         """
         SELECT COUNT(*) AS n
@@ -1016,6 +1066,20 @@ def _site_counts(site_id: int):
     return {"controls": c["n"], "risks": r["n"]}
 
 
+def _current_user_display(request: Request) -> str:
+    return current_user_email(request) or os.getenv("DEV_USER") or "andrewpeat"
+
+
+def _get_org_or_404(org_id: int) -> dict:
+    """
+    Fetch an organisation by id or raise 404 if it doesn't exist.
+    """
+    row = _sql_one("SELECT * FROM orgs WHERE id = ?", (org_id,))
+    if not row:
+        raise HTTPException(status_code=404, detail="Organisation not found")
+    return row
+
+
 # ---------------------------------------------------------------------------
 # Organisation & Sites pages
 # ---------------------------------------------------------------------------
@@ -1049,7 +1113,6 @@ def org_overview_page(request: Request, org_id: int):
 # ---------------------------------------------------------------------------
 # Org members (people)
 # ---------------------------------------------------------------------------
-
 @app.get("/orgs/{org_id}/members", response_class=HTMLResponse)
 def org_members_page(request: Request, org_id: int):
     """
@@ -1375,26 +1438,108 @@ def site_edit_save(
 
 
 # ---------------------------------------------------------------------------
+# OpenAI client + helpers
+# ---------------------------------------------------------------------------
+def _openai_client():
+    """
+    Returns an OpenAI client or None if no key is configured.
+    Uses whatever is in OPENAI_API_KEY (project keys are fine).
+    """
+    key = os.getenv("OPENAI_API_KEY")
+    if not key:
+        print("[AI] ⚠️ No OPENAI_API_KEY found in environment")
+        return None
+
+    print(f"[AI] ✅ OPENAI_API_KEY detected, prefix={key[:10]}, length={len(key)}")
+    return OpenAI(api_key=key)
+
+
+def _extract_text_from_response(resp):
+    """
+    Helper for Responses API objects:
+    flattens all text segments into a single string.
+    """
+    parts = []
+    for out in resp.output:
+        for item in out.content:
+            if item.type == "output_text":
+                parts.append(item.text)
+    return "".join(parts).strip()
+
+
+def _ensure_ai_summary_for_item(row: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Given a DB row from 'items', populate row['ai_summary'] if missing
+    using the OpenAI client, and persist it to the DB.
+    NOTE: relies on _generate_ai_summary being defined elsewhere.
+    """
+    if row.get("ai_summary"):
+        return row
+
+    client = _openai_client()
+    if not client:
+        print("[AI] ⚠️ Skipping AI summary – no client")
+        return row
+
+    title = row.get("title") or ""
+    url = row.get("guid_or_link") or row.get("link") or ""
+    body = row.get("content") or ""
+
+    # _generate_ai_summary should be defined elsewhere in your codebase.
+    summary = _generate_ai_summary(  # type: ignore[name-defined]
+        client,
+        title=title,
+        url=url,
+        body=body,
+    )
+
+    if not summary:
+        return row
+
+    _sql_exec(
+        "UPDATE items SET ai_summary = ? WHERE id = ?",
+        (summary, row["id"]),
+    )
+    row["ai_summary"] = summary
+    return row
+
+
+@app.get("/api/test-openai")
+def api_test_openai():
+    """
+    Simple health-check endpoint to verify OpenAI is reachable and the key works.
+    """
+    client = _openai_client()
+    if not client:
+        return JSONResponse(
+            status_code=500,
+            content={"ok": False, "error": "No OPENAI_API_KEY configured"},
+        )
+
+    try:
+        resp = client.responses.create(
+            model="gpt-4.1-mini",
+            input=[
+                {"role": "system", "content": "You are a helpful assistant."},
+                {"role": "user", "content": "Reply with the single word: pong"},
+            ],
+            max_output_tokens=10,
+        )
+        text = _extract_text_from_response(resp)
+        return JSONResponse(
+            status_code=200,
+            content={"ok": True, "response": text},
+        )
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"ok": False, "error": str(e)},
+        )
+
+
+# ---------------------------------------------------------------------------
 # Org controls
 # ---------------------------------------------------------------------------
-def _current_user_display(request: Request) -> str:
-    return current_user_email(request) or os.getenv("DEV_USER") or "andrewpeat"
-
-def _get_org_or_404(conn: sqlite3.Connection, org_id: int) -> dict:
-    """
-    Fetch an organisation by id using an existing DB connection,
-    or raise 404 if it doesn't exist.
-    """
-    conn.row_factory = sqlite3.Row
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM orgs WHERE id = ?", (org_id,))
-    row = cur.fetchone()
-    if not row:
-        raise HTTPException(status_code=404, detail="Organisation not found")
-    return dict(row)
-
-
-
 @app.get("/orgs/{org_id}/controls", response_class=HTMLResponse)
 def org_controls_page(
     request: Request,
@@ -1420,13 +1565,11 @@ def org_controls_page(
         else:
             filtered = [c for c in all_controls if c.get("site_id") == site]
 
-    # Group controls by site name for the template
     grouped: dict[str, list[dict]] = {}
     for c in filtered:
         key = c.get("site_name") or "Corporate"
         grouped.setdefault(key, []).append(c)
 
-    # Sort groups & controls for a nicer UI
     grouped_sorted = {
         k: sorted(v, key=lambda row: (row.get("code") or "", row.get("title") or ""))
         for k, v in sorted(grouped.items(), key=lambda kv: (kv[0] == "Corporate", kv[0]))
@@ -1442,6 +1585,7 @@ def org_controls_page(
             "active_site_id": active_site_id,
         },
     )
+
 
 @app.get("/orgs/{org_id}/controls/new", response_class=HTMLResponse)
 def org_control_new_page(request: Request, org_id: int, site_id: Optional[int] = None):
@@ -1500,7 +1644,7 @@ def org_control_create(
 
 
 # ---------------------------------------------------------------------------
-# Org & site risks pages (org_risks logic moved into DB helpers)
+# Org & site risks pages
 # ---------------------------------------------------------------------------
 @app.get("/orgs/{org_id}/org-risks", response_class=HTMLResponse)
 def org_risks_page(
@@ -1516,14 +1660,11 @@ def org_risks_page(
     """
     List all risks for an org – both corporate and site-specific – using
     org_risks + org_risk_sites (many-to-many).
-    A "corporate" risk is one that applies to *all* sites in the org (or
-    there are no sites yet and it has no mappings).
     """
     org = _org_basic(org_id)
     sites = db.list_sites(org_id)
     total_sites = len(sites)
 
-    # --- location filter normalisation -------------------------------------
     loc = (location or "").strip()
     loc_is_corp = (loc == "corp")
     loc_site_id: int | None = None
@@ -1533,7 +1674,6 @@ def org_risks_page(
         except ValueError:
             loc_site_id = None
 
-    # --- Fetch base risks ---------------------------------------------------
     risk_rows = _sql_all(
         """
         SELECT id, org_id, code, title, description,
@@ -1546,7 +1686,6 @@ def org_risks_page(
         (org_id,),
     )
 
-    # --- Preload site mappings ---------------------------------------------
     mapping_rows = _sql_all(
         """
         SELECT ors.org_risk_id, ors.site_id, s.name AS site_name
@@ -1564,7 +1703,6 @@ def org_risks_page(
             {"site_id": row["site_id"], "site_name": row["site_name"]}
         )
 
-    # --- Preload control counts --------------------------------------------
     control_counts_rows = _sql_all(
         """
         SELECT org_risk_id, COUNT(*) AS n
@@ -1574,20 +1712,17 @@ def org_risks_page(
     )
     control_counts = {row["org_risk_id"]: row["n"] for row in control_counts_rows}
 
-    # --- Build + filter enriched records -----------------------------------
     all_risks: list[dict] = []
 
     for r in risk_rows:
         rid = r["id"]
         site_links = risk_sites.get(rid, [])
 
-        # Corporate = applies to all sites (or there are no sites and no links)
         is_corporate = (
             (total_sites > 0 and len(site_links) == total_sites)
             or (total_sites == 0 and not site_links)
         )
 
-        # status / severity / category filters
         if status and (r.get("status") or "").lower() != status.lower():
             continue
         if severity and (r.get("severity") or "").lower() != severity.lower():
@@ -1595,31 +1730,21 @@ def org_risks_page(
         if category and (r.get("category") or "").lower() != category.lower():
             continue
 
-        # location filter
         if loc_is_corp:
-            # Only corporate risks
             if not is_corporate:
                 continue
         elif loc_site_id is not None:
-            # Site view should include:
-            #   - site-specific risks for that site
-            #   - PLUS corporate risks (applies to all sites)
             if not (
                 is_corporate
                 or any(sl["site_id"] == loc_site_id for sl in site_links)
             ):
                 continue
-        else:
-            # "All locations" – nothing extra
-            pass
 
-        # Location label/kind for display
         if is_corporate:
             location_label = "Corporate (all sites)" if total_sites else "Corporate"
             location_kind = "corp"
             primary_site_id = None
         elif not site_links:
-            # Should be rare now – org has sites but this risk hasn't been mapped
             location_label = "Unmapped"
             location_kind = "unmapped"
             primary_site_id = None
@@ -1655,7 +1780,6 @@ def org_risks_page(
             }
         )
 
-    # --- Sort + paginate ---------------------------------------------------
     def _dt_key(rec: dict) -> str:
         return (rec.get("updated_at") or rec.get("created_at") or "") or ""
 
@@ -1708,9 +1832,6 @@ def org_risks_page(
 
     return render(request, "org_risks.html", ctx)
 
-from fastapi.responses import RedirectResponse
-
-# ...
 
 @app.get("/orgs/{org_id}/org-risks/{risk_id}", response_class=HTMLResponse)
 def org_risk_detail_page(request: Request, org_id: int, risk_id: int):
@@ -1719,7 +1840,6 @@ def org_risk_detail_page(request: Request, org_id: int, risk_id: int):
     """
     org = _org_basic(org_id)
 
-    # Fetch the *correct* risk by org_id + id
     risk = _sql_one(
         """
         SELECT *
@@ -1836,7 +1956,6 @@ async def org_risk_update(
     """
     form = await request.form()
 
-    # --- Pull fields from form ---
     code        = (form.get("code") or "").strip()
     title       = (form.get("title") or "").strip()
     category    = (form.get("category") or "").strip()
@@ -1845,7 +1964,6 @@ async def org_risk_update(
     owner_id    = (form.get("owner_id") or "").strip()
     description = (form.get("description") or "").strip()
 
-    # Multiple control IDs from the modal checkboxes
     raw_control_ids = form.getlist("control_ids")
     control_ids: list[int] = []
     for cid in raw_control_ids:
@@ -1856,7 +1974,6 @@ async def org_risk_update(
 
     now = datetime.utcnow().isoformat(timespec="seconds")
 
-    # --- Normalise / validate code (unique per org) ---
     if code == "":
         code_db = None
     else:
@@ -1866,7 +1983,7 @@ async def org_risk_update(
             FROM org_risks
             WHERE org_id = ? AND code = ? AND id != ?
             """,
-            (org_id, code),
+            (org_id, code, risk_id),
         )
         if existing:
             return JSONResponse(
@@ -1878,10 +1995,8 @@ async def org_risk_update(
             )
         code_db = code
 
-    # --- Normalise owner_id (optional int) ---
     owner_id_db = int(owner_id) if owner_id else None
 
-    # --- Update main risk row ---------------------------------------------
     sql = """
     UPDATE org_risks
     SET
@@ -1909,11 +2024,8 @@ async def org_risk_update(
     )
     _sql_exec(sql, params)
 
-    # --- Update linked controls in org_controls_risks ----------------------
-    # 1) clear existing mappings for this risk
     _sql_exec("DELETE FROM org_controls_risks WHERE org_risk_id = ?", (risk_id,))
 
-    # 2) insert the new set
     for cid in control_ids:
         _sql_exec(
             """
@@ -1935,7 +2047,6 @@ def org_risk_delete(request: Request, org_id: int, risk_id: int):
     if not risk:
         raise HTTPException(status_code=404, detail="Risk not found for this organisation")
 
-    # Remove mappings first
     _sql_exec("DELETE FROM org_controls_risks WHERE org_risk_id = ?", (risk_id,))
     _sql_exec("DELETE FROM org_risks WHERE org_id = ? AND id = ?", (org_id, risk_id))
 
@@ -1970,7 +2081,6 @@ def site_risks_page(
     if not site or site.get("org_id") not in (None, org_id):
         raise HTTPException(404, "Site not found in this organisation")
 
-    # --- Count total risks for pagination ----------------------------------
     filters = ["r.org_id = ?", "ors.site_id = ?"]
     params: list[Any] = [org_id, site_id]
 
@@ -2001,7 +2111,6 @@ def site_risks_page(
     per_page = max(1, min(200, int(per_page)))
     offset = (page - 1) * per_page
 
-    # --- Fetch risks for this page ----------------------------------------
     risks = _sql_all(
         f"""
         SELECT DISTINCT
@@ -2016,7 +2125,6 @@ def site_risks_page(
         tuple(params + [per_page, offset]),
     )
 
-    # Add controls_count for each risk
     for r in risks:
         row = _sql_one(
             "SELECT COUNT(*) AS n FROM org_controls_risks WHERE org_risk_id = ?",
@@ -2027,7 +2135,6 @@ def site_risks_page(
     total_pages = max(1, (total + per_page - 1) // per_page)
     page_numbers = list(range(max(1, page - 2), min(total_pages, page + 2) + 1))
 
-    # Category choices (for this site only)
     cats = _sql_all(
         """
         SELECT DISTINCT r.category AS category
@@ -2077,7 +2184,6 @@ async def org_risk_new_drawer(request: Request, org_id: int):
     org = _org_basic(org_id)
     sites = db.list_sites(org_id)
 
-    # Minimal empty risk object for the form
     risk = {
         "id": None,
         "code": "",
@@ -2119,7 +2225,6 @@ async def org_risk_create(request: Request, org_id: int):
     severity = (form.get("severity") or "").strip()
     category = (form.get("category") or "").strip()
 
-    # site_ids[] (many-to-many via org_risk_sites)
     raw_site_ids = form.getlist("site_ids")
     site_ids: list[int] = []
     for sid in raw_site_ids:
@@ -2128,18 +2233,13 @@ async def org_risk_create(request: Request, org_id: int):
         except (TypeError, ValueError):
             continue
 
-    # 👉 NEW: if no sites chosen, treat as "corporate" and map to *all* sites
     all_sites = db.list_sites(org_id)
     if not site_ids and all_sites:
         site_ids = [s["id"] for s in all_sites]
 
-    # --- insert the risk row itself ---
-    from datetime import datetime, timezone
-
     now = datetime.now(timezone.utc).isoformat()
 
-    # NOTE: site_id is now legacy – we always use org_risk_sites for actual mappings
-    with db._conn() as conn, closing(conn.cursor()) as cur:
+    with db._conn() as conn, closing(conn.cursor()) as cur:  # type: ignore[attr-defined]
         cur.execute(
             """
             INSERT INTO org_risks
@@ -2151,8 +2251,8 @@ async def org_risk_create(request: Request, org_id: int):
             """,
             (
                 int(org_id),
-                None,          # site_id deprecated in favour of org_risk_sites
-                None,          # code – you can fill via your numbering logic later
+                None,
+                None,
                 title,
                 description,
                 owner_name,
@@ -2167,7 +2267,6 @@ async def org_risk_create(request: Request, org_id: int):
         new_id = int(cur.lastrowid)
         conn.commit()
 
-    # save sites (many-to-many)
     db.set_sites_for_risk(org_id, new_id, site_ids)
 
     wants_json = request.headers.get("X-Requested-With") == "fetch" or \
@@ -2181,8 +2280,9 @@ async def org_risk_create(request: Request, org_id: int):
         status_code=303,
     )
 
+
 # ---------------------------------------------------------------------------
-# /controls (simple global list)
+# /controls (simple global list) + router
 # ---------------------------------------------------------------------------
 router = APIRouter()
 
@@ -2208,10 +2308,13 @@ def control_detail(request: Request, cid: int):
         "control_detail.html",
         {"control": oc[0] if oc else None, "items": items},
     )
+
+
 @router.get("/orgs/{org_id}/sites/{site_id}/controls")
 def site_controls_redirect(org_id: int, site_id: int):
     url = f"/orgs/{org_id}/controls?site={site_id}"
     return RedirectResponse(url, status_code=303)
+
 
 @router.post("/send", response_class=HTMLResponse)
 async def send_article_fragment(guid: str = Form(...), email: str = Form(...)):
@@ -2237,310 +2340,6 @@ async def send_article_fragment(guid: str = Form(...), email: str = Form(...)):
 
 
 app.include_router(router)
-
-
-# ---------------------------------------------------------------------------
-# AI Summary API (+ PDF handling)
-# ---------------------------------------------------------------------------
-class AISummaryReq(BaseModel):
-    guid: str
-
-
-def _fallback_ai_summary(text: str, limit_words: int = 100) -> str:
-    words = (text or "").split()
-    snippet = " ".join(words[:limit_words])
-    return snippet + ("…" if len(words) > limit_words else "")
-
-
-def _openai_client():
-    try:
-        from openai import OpenAI
-
-        key = os.getenv("OPENAI_API_KEY")
-        if not key:
-            print("[AI] ⚠️ No OPENAI_API_KEY found in environment")
-            return None
-        print("[AI] ✅ OpenAI API key found, creating client")
-        return OpenAI(api_key=key)
-    except Exception as e:  # pragma: no cover
-        print(f"[AI] ❌ Failed to create OpenAI client: {e}")
-        return None
-
-
-_BOILERPLATE_PATTERNS = [
-    r"\bskip to (main )?content\b",
-    r"\b(main )?navigation\b",
-    r"\b(show/?hide|toggle) menu\b",
-    r"\b(sign in|register|log ?in|log ?out)\b",
-    r"\b(search|search results|reset button in search)\b",
-    r"\b(cookie(s)? (banner|settings|preferences)|accept all cookies)\b",
-    r"\b(user account menu)\b",
-    r"\bfooter\b",
-    r"\bshare (this )?page\b",
-    r"\brelated (content|links)\b",
-    r"\bdata portal\b",
-]
-_BP_REGEX = re.compile("|".join(_BOILERPLATE_PATTERNS), re.IGNORECASE)
-
-
-def _clean_extracted_text(title: str, text: str, max_chars: int = 12000) -> str:
-    if not text:
-        return text
-    raw = re.sub(r"[ \t]+", " ", text)
-    raw = re.sub(r"\r\n?", "\n", raw)
-    lines = [ln.strip() for ln in raw.split("\n")]
-
-    kept: List[str] = []
-    ttl = (title or "").strip()
-    ttl_low = ttl.lower()
-
-    for ln in lines:
-        if not ln:
-            continue
-        if _BP_REGEX.search(ln):
-            continue
-        if len(ln) <= 3:
-            continue
-        if len(ln) <= 18 and not ln.endswith((".", ":", "?", "!", "…")):
-            continue
-        if ttl and ln.lower() == ttl_low:
-            continue
-        kept.append(ln)
-
-    cleaned = "\n".join(kept)
-    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
-    if len(cleaned) < 200:
-        cleaned = text.strip()
-    if len(cleaned) > max_chars:
-        cleaned = cleaned[:max_chars]
-    return cleaned
-
-
-def _is_boilerplate_summary(text: str) -> bool:
-    if not text:
-        return True
-    bad_snippets = [
-        "skip to main content",
-        "user account menu",
-        "reset button in search",
-        "data portal",
-        "sign in / register",
-        "show/hide menu",
-        "main navigation",
-        "cookies",
-    ]
-    t = text.lower().strip()
-    return any(snip in t for snip in bad_snippets)
-
-
-def _generate_ai_summary(
-    title: str,
-    text: str,
-    limit_words: int = 100,
-    guid: Optional[str] = None,
-) -> str:
-    print(f"[AI] 🔎 Generating summary guid={guid} title={title[:60]!r} len={len(text)}")
-    text = (text or "").strip()
-    if not text:
-        print("[AI] ⚠️ No text provided to summarise.")
-        return "No content available to summarise."
-
-    client = _openai_client()
-    if not client:
-        print("[AI] ⚠️ No OpenAI client available — using fallback snippet.")
-        return _fallback_ai_summary(text, limit_words)
-
-    prompt = f"""Summarise the following item in up to {limit_words} words.
-Plain UK English, no bullet points, no headings. Cover what it is, who it affects, and likely action/implication.
-
-TITLE: {title}
-TEXT:
-{text[:6000]}
-"""
-    try:
-        print("[AI] 🧠 Sending request to OpenAI API...")
-        resp = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {
-                    "role": "system",
-                    "content": "You are a precise UK energy regulation analyst.",
-                },
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.2,
-        )
-        out = (resp.choices[0].message.content or "").strip()
-        print("[AI] ✅ Received summary from OpenAI")
-        words = out.split()
-        if len(words) > limit_words:
-            out = " ".join(words[:limit_words]) + "…"
-        return out
-    except Exception as e:  # pragma: no cover
-        print(f"[AI] ❌ OpenAI request failed: {e}")
-        return _fallback_ai_summary(text, limit_words)
-
-
-def _is_pdf_link(url: str) -> bool:
-    try:
-        path = urlparse(url).path.lower()
-        return path.endswith(".pdf")
-    except Exception:
-        return False
-
-
-def _is_pdf_content_type(resp) -> bool:
-    ct = (resp.headers.get("Content-Type") or "").lower()
-    return "pdf" in ct or ct.strip() == "application/octet-stream"
-
-
-def _fetch_pdf_bytes(url: str, timeout: int = 30) -> bytes:
-    try:
-        h = requests.head(url, timeout=timeout, allow_redirects=True)
-        if h.ok and not _is_pdf_content_type(h):
-            pass
-    except Exception:
-        pass
-
-    r = requests.get(url, timeout=timeout, allow_redirects=True, stream=True)
-    r.raise_for_status()
-    total = 0
-    chunks: List[bytes] = []
-    for chunk in r.iter_content(1024 * 64):
-        if not chunk:
-            break
-        total += len(chunk)
-        if total > 15 * 1024 * 1024:
-            break
-        chunks.append(chunk)
-    return b"".join(chunks)
-
-
-def _pdf_bytes_to_text_pypdf(blob: bytes, max_pages: int = 8) -> str:
-    from pypdf import PdfReader
-
-    try:
-        reader = PdfReader(io.BytesIO(blob))
-        out: List[str] = []
-        for i, page in enumerate(reader.pages):
-            if i >= max_pages:
-                break
-            try:
-                txt = page.extract_text() or ""
-            except Exception:
-                txt = ""
-            if txt:
-                out.append(txt)
-        return "\n".join(out).strip()
-    except Exception:
-        return ""
-
-
-def _find_item_by_guid(guid: str) -> Optional[dict]:
-    items = db.list_items(limit=20000)
-    for it in items:
-        if (it.get("guid") or it.get("link")) == guid:
-            return it
-    return None
-
-
-@app.get("/api/test-openai")
-def test_openai():
-    from openai import OpenAI
-
-    key = os.getenv("OPENAI_API_KEY")
-    if not key:
-        return {"ok": False, "error": "No API key found"}
-    try:
-        client = OpenAI(api_key=key)
-        resp = client.models.list()
-        return {"ok": True, "models": [m.id for m in resp.data[:5]]}
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
-
-
-def _get_cached_ai_summary(guid: str) -> Optional[str]:
-    row = _sql_one(
-        "SELECT ai_summary FROM items WHERE guid = ? LIMIT 1",
-        (guid,),
-    )
-    if row and row.get("ai_summary"):
-        return row["ai_summary"]
-    row = _sql_one(
-        "SELECT ai_summary FROM items WHERE link = ? LIMIT 1",
-        (guid,),
-    )
-    if row and row.get("ai_summary"):
-        return row["ai_summary"]
-    return None
-
-
-def _set_cached_ai_summary(guid: str, summary: str) -> None:
-    _sql_exec("UPDATE items SET ai_summary = ? WHERE guid = ?", (summary, guid))
-    _sql_exec("UPDATE items SET ai_summary = ? WHERE link = ?", (summary, guid))
-
-
-@app.post("/api/ai-summary")
-def ai_summary(req: AISummaryReq):
-    item = _find_item_by_guid(req.guid)
-    if not item:
-        raise HTTPException(status_code=404, detail="Item not found")
-
-    if item.get("ai_summary"):
-        print(f"[AI] ♻️ Using cached summary for {req.guid}")
-        return JSONResponse({"ok": True, "summary": item["ai_summary"]})
-
-    cached = _get_cached_ai_summary(req.guid)
-    if cached:
-        return JSONResponse({"ok": True, "summary": cached, "cached": True})
-
-    title = (item.get("title") or "").strip()
-    link = (item.get("link") or "").strip()
-    text = (item.get("content") or item.get("summary") or "").strip()
-
-    wants_pdf = ("[PDF document" in text) or _is_pdf_link(link)
-    if wants_pdf and link:
-        try:
-            blob = _fetch_pdf_bytes(link)
-            extracted = _pdf_bytes_to_text_pypdf(blob, max_pages=8)
-            if extracted:
-                text = extracted
-            else:
-                return JSONResponse(
-                    {
-                        "ok": True,
-                        "summary": "This PDF appears to be image-based or has no extractable text. Please open the document to view.",
-                    }
-                )
-        except Exception:
-            return JSONResponse(
-                {
-                    "ok": True,
-                    "summary": "Could not fetch or parse the PDF for summary. Please open the document to view.",
-                }
-            )
-
-    if not text:
-        return JSONResponse({"ok": True, "summary": "No content available to summarise."})
-
-    text = _clean_extracted_text(title, text)
-    summary = _generate_ai_summary(title, text, limit_words=120, guid=req.guid)
-
-    if not _is_boilerplate_summary(summary):
-        try:
-            _sql_exec(
-                "UPDATE items SET ai_summary = ? WHERE guid = ?",
-                (summary, req.guid),
-            )
-        except Exception as e:
-            print(f"[AI] ⚠️ Failed to cache summary: {e}")
-
-    try:
-        _set_cached_ai_summary(req.guid, summary)
-    except Exception as e:
-        print("[AI] ⚠️ Failed to cache summary (secondary):", e)
-
-    return JSONResponse({"ok": True, "summary": summary, "cached": False})
 
 
 # ---------------------------------------------------------------------------

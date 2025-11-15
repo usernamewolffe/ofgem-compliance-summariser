@@ -19,8 +19,8 @@ USER_AGENT = (
 # You can add more entry points here later
 DEFAULT_START_URLS = [
     # Small-scale electricity generation publications
-    "https://www.ofgem.gov.uk/electricity-generation/"
-    "small-scale-electricity-generation/"
+    "https://www.ofgem.gov.uk/electricity-generation/",
+    "small-scale-electricity-generation/",
     "small-scale-electricity-generation-publications",
 ]
 
