@@ -513,9 +513,13 @@ def _ensure_users_tables():
 
 def _ensure_org_risk_tables():
     """
-    Make sure the new junction tables for org risks exist.
+    Ensure all junction tables for org risks exist.
     Safe to run on every startup.
+    - org_controls_risks : org_risks ↔ org_controls (many-to-many)
+    - org_risk_sites     : org_risks ↔ sites (many-to-many)
+    - org_risk_items     : org_risks ↔ items/news (many-to-many)
     """
+
     # Link org_risks ↔ org_controls
     _sql_exec(
         """
@@ -528,8 +532,12 @@ def _ensure_org_risk_tables():
         )
         """
     )
-    _sql_exec("CREATE INDEX IF NOT EXISTS idx_ocr_risk ON org_controls_risks(org_risk_id)")
-    _sql_exec("CREATE INDEX IF NOT EXISTS idx_ocr_control ON org_controls_risks(org_control_id)")
+    _sql_exec(
+        "CREATE INDEX IF NOT EXISTS idx_ocr_risk ON org_controls_risks(org_risk_id)"
+    )
+    _sql_exec(
+        "CREATE INDEX IF NOT EXISTS idx_ocr_control ON org_controls_risks(org_control_id)"
+    )
 
     # Many-to-many link: org_risks ↔ sites
     _sql_exec(
@@ -543,23 +551,31 @@ def _ensure_org_risk_tables():
         )
         """
     )
-    _sql_exec("CREATE INDEX IF NOT EXISTS idx_ors_risk ON org_risk_sites(org_risk_id)")
-    _sql_exec("CREATE INDEX IF NOT EXISTS idx_ors_site ON org_risk_sites(site_id)")
+    _sql_exec(
+        "CREATE INDEX IF NOT EXISTS idx_ors_risk ON org_risk_sites(org_risk_id)"
+    )
+    _sql_exec(
+        "CREATE INDEX IF NOT EXISTS idx_ors_site ON org_risk_sites(site_id)"
+    )
 
-    # NEW: Many-to-many link: org_risks ↔ news items
+    # Many-to-many link: org_risks ↔ news items (feed items)
     _sql_exec(
         """
         CREATE TABLE IF NOT EXISTS org_risk_items (
           org_risk_id INTEGER NOT NULL,
-          item_guid   TEXT NOT NULL,
-          created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+          item_guid   TEXT    NOT NULL,
+          created_at  TEXT    NOT NULL DEFAULT (datetime('now')),
           PRIMARY KEY (org_risk_id, item_guid),
           FOREIGN KEY (org_risk_id) REFERENCES org_risks(id) ON DELETE CASCADE
         )
         """
     )
-    _sql_exec("CREATE INDEX IF NOT EXISTS idx_ori_risk ON org_risk_items(org_risk_id)")
-    _sql_exec("CREATE INDEX IF NOT EXISTS idx_ori_guid ON org_risk_items(item_guid)")
+    _sql_exec(
+        "CREATE INDEX IF NOT EXISTS idx_ori_risk ON org_risk_items(org_risk_id)"
+    )
+    _sql_exec(
+        "CREATE INDEX IF NOT EXISTS idx_ori_guid ON org_risk_items(item_guid)"
+    )
 
 
 @app.on_event("startup")
@@ -847,21 +863,26 @@ def summaries_page(
     org_id = resolve_org_id(request)
     org_name = _org_name_by_id(org_id)
 
-    # Pull items directly from the DB, including ai_summary
+    # Pull items directly from the DB, including ai_summary AND a per-item risk link count
     rows = _sql_many(
         """
         SELECT
-            guid,
-            link,
-            title,
-            source,
-            published_at,
-            ai_summary,
-            content,
-            tags,
-            created_at
-        FROM items
-        ORDER BY published_at DESC
+            i.guid,
+            i.link,
+            i.title,
+            i.source,
+            i.published_at,
+            i.ai_summary,
+            i.content,
+            i.tags,
+            i.created_at,
+            (
+              SELECT COUNT(*)
+              FROM org_risk_items ori
+              WHERE ori.item_guid = i.guid
+            ) AS risk_link_count
+        FROM items i
+        ORDER BY i.published_at DESC
         LIMIT ?
         """,
         (20000,),
@@ -880,6 +901,13 @@ def summaries_page(
             e["tags"] = tags_raw
         else:
             e["tags"] = []
+
+        # Normalise risk_link_count
+        try:
+            e["risk_link_count"] = int(e.get("risk_link_count") or 0)
+        except Exception:
+            e["risk_link_count"] = 0
+
         all_items.append(e)
 
     def in_date_range(dt_str: str) -> bool:
@@ -941,11 +969,10 @@ def summaries_page(
         sources = list(all_sources)
 
     uid = get_user_id(request)
-    saved_filters: list[dict] = []  # legacy feature – currently disabled
-    folders: list[dict] = []        # ditto
+    saved_filters = []  # db is None, so no saved filters for now
 
-    # NEW: load org risks for the dropdown
-    org_risks = _sql_all(
+    # Risks for the "Link to risk" dropdown
+    org_risks_for_dropdown = _sql_all(
         """
         SELECT id, code, title
         FROM org_risks
@@ -974,12 +1001,13 @@ def summaries_page(
             "all_sources": all_sources,
             "all_topics": TOPIC_TAGS,
             "saved_filters": saved_filters,
-            "folders": folders,
             "org_id": org_id,
             "org_name": org_name,
-            "org_risks": org_risks,
+            "org_risks": org_risks_for_dropdown,
+            "folders": [],  # folders APIs still use db; keep empty for now
         },
     )
+
 
 @app.get("/api/debug-openai-key")
 def debug_openai_key():
@@ -1703,41 +1731,6 @@ def api_test_openai():
             content={"ok": False, "error": str(e)},
         )
 
-@app.post("/api/orgs/{org_id}/org-risks/{risk_id}/tag-item")
-async def api_tag_item_to_risk(
-    request: Request,
-    org_id: int,
-    risk_id: int,
-    guid: str = Form(...),
-):
-    """
-    Tag a single item (by guid) to an org-level risk.
-    Called from the summaries UI (e.g. right-hand drawer or action menu).
-    """
-    user_email = current_user_email(request)
-    if not guid.strip():
-        return JSONResponse({"ok": False, "error": "Missing guid"}, status_code=400)
-
-    tag_item_to_risk(user_email, guid.strip(), org_id, risk_id)
-    return JSONResponse({"ok": True})
-
-
-@app.post("/api/orgs/{org_id}/org-risks/{risk_id}/untag-item")
-async def api_untag_item_from_risk(
-    request: Request,
-    org_id: int,
-    risk_id: int,
-    guid: str = Form(...),
-):
-    """
-    Remove a link between an item and a risk.
-    """
-    user_email = current_user_email(request)
-    if not guid.strip():
-        return JSONResponse({"ok": False, "error": "Missing guid"}, status_code=400)
-
-    untag_item_from_risk(user_email, guid.strip(), org_id, risk_id)
-    return JSONResponse({"ok": True})
 
 # ---------------------------------------------------------------------------
 # Org controls
@@ -2133,9 +2126,7 @@ def org_risks_page(
 @app.get("/orgs/{org_id}/org-risks/{risk_id}", response_class=HTMLResponse)
 def org_risk_detail_page(request: Request, org_id: int, risk_id: int):
     """
-    Full-page view of a single org-level risk, including:
-      - linked org controls
-      - news/items that have been mapped to this risk
+    Full-page view of a single org-level risk.
     """
     org = _org_basic(org_id)
 
@@ -2150,6 +2141,7 @@ def org_risk_detail_page(request: Request, org_id: int, risk_id: int):
     if not risk:
         raise HTTPException(status_code=404, detail="Risk not found for this organisation")
 
+    # All org controls for this org to allow linking
     controls = _sql_all(
         """
         SELECT id, code, title, status
@@ -2166,17 +2158,16 @@ def org_risk_detail_page(request: Request, org_id: int, risk_id: int):
     )
     linked_ids = {row["org_control_id"] for row in linked_rows}
 
-    # NEW: items linked to this risk
+    # NEW: linked items (news) for this risk
     linked_items = _sql_all(
         """
         SELECT
           i.guid,
           i.title,
-          i.link,
           i.source,
           i.published_at,
           i.ai_summary,
-          i.content
+          i.link
         FROM org_risk_items ori
         JOIN items i ON i.guid = ori.item_guid
         WHERE ori.org_risk_id = ?
@@ -2194,9 +2185,10 @@ def org_risk_detail_page(request: Request, org_id: int, risk_id: int):
             "risk": risk,
             "controls": controls,
             "linked_ids": linked_ids,
-            "linked_items": linked_items,
+            "linked_items": linked_items,  # <-- new
         },
     )
+
 
 @app.get("/orgs/{org_id}/org-risks/{risk_id}/modal", response_class=HTMLResponse)
 def org_risk_modal(request: Request, org_id: int, risk_id: int):
@@ -2382,52 +2374,68 @@ def org_risk_delete(request: Request, org_id: int, risk_id: int):
 @app.post("/api/orgs/{org_id}/org-risks/{risk_id}/tag-item")
 async def api_tag_item_to_risk(org_id: int, risk_id: int, request: Request):
     """
-    Link a scraped item (by GUID) to an org-level risk.
-    Expects form-data with:
-      - guid: item GUID
-    Returns JSON { ok: bool, error?: str }.
+    Link a news item (by guid) to an org-level risk.
+
+    Called from the summaries page 'Link' button.
+    Expects: form-data with 'guid'.
+    Returns: { ok: true } or { ok: false, error: ... }.
     """
-    form = await request.form()
-    guid = (form.get("guid") or "").strip()
+    # --- 1) Extract GUID from form ---
+    guid = ""
+    try:
+        form = await request.form()
+        guid = (form.get("guid") or "").strip()
+    except Exception as e:
+        print(f"[tag-item] Error parsing form: {e}")
+
     if not guid:
+        print("[tag-item] Missing guid in request")
         return JSONResponse(
-            {"ok": False, "error": "Missing GUID"},
+            {"ok": False, "error": "Missing guid"},
             status_code=400,
         )
 
-    # Ensure risk belongs to this org
+    print(f"[tag-item] Request link: org_id={org_id}, risk_id={risk_id}, guid={guid}")
+
+    # --- 2) Check risk belongs to this org ---
     risk = _sql_one(
         "SELECT id FROM org_risks WHERE id = ? AND org_id = ?",
         (risk_id, org_id),
     )
     if not risk:
+        print("[tag-item] Risk not found / wrong org")
         return JSONResponse(
             {"ok": False, "error": "Risk not found for this organisation"},
             status_code=404,
         )
 
-    # Ensure item exists
-    item = _sql_one(
-        "SELECT guid FROM items WHERE guid = ?",
-        (guid,),
-    )
+    # --- 3) Check item exists ---
+    item = _sql_one("SELECT guid FROM items WHERE guid = ?", (guid,))
     if not item:
+        print(f"[tag-item] Item not found for guid={guid}")
         return JSONResponse(
-            {"ok": False, "error": "Item not found"},
+            {"ok": False, "error": f"Item with guid '{guid}' not found"},
             status_code=404,
         )
 
-    # Insert link (idempotent)
-    _sql_exec(
-        """
-        INSERT OR IGNORE INTO org_risk_items (org_risk_id, item_guid)
-        VALUES (?, ?)
-        """,
-        (risk_id, guid),
-    )
+    # --- 4) Insert mapping ---
+    try:
+        _sql_exec(
+            """
+            INSERT OR IGNORE INTO org_risk_items (org_risk_id, item_guid)
+            VALUES (?, ?)
+            """,
+            (risk_id, guid),
+        )
+        print(f"[tag-item] Linked guid={guid} -> risk_id={risk_id}")
+    except Exception as e:
+        print(f"[tag-item] DB error: {e}")
+        return JSONResponse(
+            {"ok": False, "error": "Database error while linking item"},
+            status_code=500,
+        )
 
     return JSONResponse({"ok": True})
-
 
 @app.get("/orgs/{org_id}/sites/{site_id}/risks", response_class=HTMLResponse)
 def site_risks_page(
@@ -2650,6 +2658,88 @@ async def org_risk_create(request: Request, org_id: int):
         url=f"/orgs/{org_id}/org-risks",
         status_code=303,
     )
+@app.post("/api/orgs/{org_id}/org-risks/{risk_id}/tag-item")
+async def api_tag_item_to_risk(org_id: int, risk_id: int, request: Request):
+    """
+    Link a news item (by guid) to an org-level risk.
+
+    Called from the summaries page 'Link' button.
+    Expects: form-data with 'guid'.
+    Returns: { ok: true } or { ok: false, error: ... }.
+    """
+    # --- 1) Extract GUID from form ---
+    guid = ""
+    try:
+        form = await request.form()
+        guid = (form.get("guid") or "").strip()
+    except Exception as e:
+        print(f"[tag-item] Error parsing form: {e}")
+
+    if not guid:
+        print("[tag-item] Missing guid in request")
+        return JSONResponse(
+            {"ok": False, "error": "Missing guid"},
+            status_code=400,
+        )
+
+    print(f"[tag-item] Request link: org_id={org_id}, risk_id={risk_id}, guid={guid}")
+
+    # --- 2) Check risk belongs to this org ---
+    risk = _sql_one(
+        "SELECT id FROM org_risks WHERE id = ? AND org_id = ?",
+        (risk_id, org_id),
+    )
+    if not risk:
+        print("[tag-item] Risk not found / wrong org")
+        return JSONResponse(
+            {"ok": False, "error": "Risk not found for this organisation"},
+            status_code=404,
+        )
+
+    # --- 3) Check item exists ---
+    item = _sql_one("SELECT guid FROM items WHERE guid = ?", (guid,))
+    if not item:
+        print(f"[tag-item] Item not found for guid={guid}")
+        return JSONResponse(
+            {"ok": False, "error": f"Item with guid '{guid}' not found"},
+            status_code=404,
+        )
+
+    # --- 4) Insert mapping ---
+    try:
+        _sql_exec(
+            """
+            INSERT OR IGNORE INTO org_risk_items (org_risk_id, item_guid)
+            VALUES (?, ?)
+            """,
+            (risk_id, guid),
+        )
+        print(f"[tag-item] Linked guid={guid} -> risk_id={risk_id}")
+    except Exception as e:
+        print(f"[tag-item] DB error: {e}")
+        return JSONResponse(
+            {"ok": False, "error": "Database error while linking item"},
+            status_code=500,
+        )
+
+    return JSONResponse({"ok": True})
+
+@app.post("/api/orgs/{org_id}/org-risks/{risk_id}/untag-item")
+async def api_untag_item_from_risk(
+    request: Request,
+    org_id: int,
+    risk_id: int,
+    guid: str = Form(...),
+):
+    """
+    Remove a link between an item and a risk.
+    """
+    user_email = current_user_email(request)
+    if not guid.strip():
+        return JSONResponse({"ok": False, "error": "Missing guid"}, status_code=400)
+
+    untag_item_from_risk(user_email, guid.strip(), org_id, risk_id)
+    return JSONResponse({"ok": True})
 
 
 # ---------------------------------------------------------------------------

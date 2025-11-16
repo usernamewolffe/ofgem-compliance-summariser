@@ -1,140 +1,201 @@
 {% extends "base.html" %}
-{% block title %}Risk {{ risk.code or ('R-' ~ risk.id) }} — {{ risk.title }}{% endblock %}
+{% block title %}
+  {% if risk.code %}{{ risk.code }} – {% else %}Risk R-{{ risk.id }} – {% endif %}
+  {% if org %}{{ org.name }}{% else %}Organisation {{ org_id }}{% endif %}
+{% endblock %}
 
 {% block content %}
 
-<div class="page-title">
-  <h1>
-    {% if org %}{{ org.name }}{% else %}Organisation {{ org_id }}{% endif %}
-    — Risk {{ risk.code or ('R-' ~ risk.id) }}
-  </h1>
-</div>
+<div class="mx-auto max-w-5xl px-4 sm:px-6 lg:px-8 mt-4 mb-8">
 
-<div class="wrap" style="display:grid; grid-template-columns: minmax(0,2.2fr) minmax(260px,1fr); gap:1.5rem;">
-  <!-- MAIN COLUMN -->
-  <section class="panel" style="padding:1.25rem; background:#f9fbf9; border-radius:12px;">
-    <header class="mb-4">
-      <h2 class="text-lg font-semibold mb-1">{{ risk.title }}</h2>
-      <div class="flex flex-wrap items-center gap-2 text-sm">
-        {% if risk.code %}
-          <span class="pill">Code: {{ risk.code }}</span>
+  <!-- Header / breadcrumb -->
+  <div class="flex items-center justify-between gap-3 mb-4">
+    <div class="flex items-center gap-3">
+      <a href="/orgs/{{ org_id }}/org-risks"
+         class="text-sm text-emerald-800 hover:text-emerald-900 hover:underline">
+        ← Back to risks
+      </a>
+    </div>
+  </div>
+
+  <!-- Risk header card -->
+  <section class="panel p-4 sm:p-5 mb-6">
+    <div class="flex flex-wrap items-start justify-between gap-3">
+      <div>
+        <div class="flex items-center gap-2 mb-1">
+          <span class="inline-flex items-center rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-800 border border-emerald-200">
+            {{ risk.code or ('R-' ~ risk.id) }}
+          </span>
+        </div>
+        <h1 class="text-xl font-semibold leading-snug">
+          {{ risk.title or 'Untitled risk' }}
+        </h1>
+        {% if org %}
+          <p class="mt-1 text-sm text-gray-500">
+            {{ org.name }}
+          </p>
         {% endif %}
+      </div>
+
+      <!-- Status / severity / category -->
+      <div class="flex flex-col items-end gap-1 text-xs">
         {% if risk.status %}
-          <span class="pill">Status: {{ risk.status }}</span>
+          <span class="inline-flex items-center rounded-full px-2.5 py-1 border text-[0.7rem]
+                        {% if risk.status == 'Open' %}
+                          bg-red-50 border-red-200 text-red-700
+                        {% elif risk.status in ['In progress','Mitigated'] %}
+                          bg-amber-50 border-amber-200 text-amber-700
+                        {% else %}
+                          bg-emerald-50 border-emerald-200 text-emerald-800
+                        {% endif %}">
+            Status: {{ risk.status }}
+          </span>
         {% endif %}
         {% if risk.severity %}
-          <span class="pill">Severity: {{ risk.severity }}</span>
+          <span class="inline-flex items-center rounded-full px-2.5 py-1 bg-slate-50 border border-slate-200 text-[0.7rem] text-slate-700">
+            Severity: {{ risk.severity }}
+          </span>
         {% endif %}
         {% if risk.category %}
-          <span class="pill">Category: {{ risk.category }}</span>
+          <span class="inline-flex items-center rounded-full px-2.5 py-1 bg-slate-50 border border-slate-200 text-[0.7rem] text-slate-700">
+            Category: {{ risk.category }}
+          </span>
         {% endif %}
       </div>
-    </header>
+    </div>
 
+    <!-- Owner + timestamps -->
+    <div class="mt-4 flex flex-wrap gap-x-6 gap-y-2 text-xs text-gray-500">
+      {% if risk.owner_name or risk.owner_email %}
+        <div>
+          <span class="font-semibold text-gray-700">Owner:</span>
+          {% if risk.owner_name %} {{ risk.owner_name }}{% endif %}
+          {% if risk.owner_email %}
+            <span class="ml-1 text-emerald-800">
+              &lt;{{ risk.owner_email }}&gt;
+            </span>
+          {% endif %}
+        </div>
+      {% endif %}
+      {% if risk.created_at %}
+        <div>
+          <span class="font-semibold text-gray-700">Created:</span>
+          {{ risk.created_at }}
+        </div>
+      {% endif %}
+      {% if risk.updated_at %}
+        <div>
+          <span class="font-semibold text-gray-700">Last updated:</span>
+          {{ risk.updated_at }}
+        </div>
+      {% endif %}
+    </div>
+
+    <!-- Description -->
     {% if risk.description %}
-      <div class="prose text-sm leading-relaxed mb-6">
-        <h3 class="text-base font-semibold mb-1">Description</h3>
-        <p>{{ risk.description }}</p>
+      <div class="mt-4 border-t border-gray-100 pt-3">
+        <h2 class="text-sm font-semibold text-gray-800 mb-1">Description</h2>
+        <p class="text-sm leading-relaxed whitespace-pre-line">
+          {{ risk.description }}
+        </p>
       </div>
     {% endif %}
+  </section>
 
-    <!-- Linked controls -->
-    <div class="mb-6">
-      <h3 class="text-base font-semibold mb-2">Linked controls</h3>
-      {% set has_any = False %}
-      <ul class="grid gap-2">
+  <!-- Two-column: controls + linked items -->
+  <div class="grid gap-5 lg:grid-cols-5">
+
+    <!-- Controls (left) -->
+    <section class="lg:col-span-2 panel p-4 sm:p-5">
+      <div class="flex items-center justify-between mb-3">
+        <h2 class="text-sm font-semibold text-gray-800">
+          Controls mitigating this risk
+        </h2>
+      </div>
+
+      {% set has_linked_controls = false %}
+      <ul class="space-y-2">
         {% for c in controls %}
           {% if c.id in linked_ids %}
-            {% set has_any = True %}
-            <li class="border border-gray-200 rounded-lg px-3 py-2 text-sm flex items-center justify-between">
-              <div>
-                <div class="font-medium">
-                  {% if c.code %}{{ c.code }} — {% endif %}
-                  {{ c.title }}
+            {% set has_linked_controls = true %}
+            <li class="border border-emerald-100 bg-emerald-50/60 rounded-lg px-3 py-2">
+              <div class="flex items-center justify-between gap-2">
+                <div>
+                  <div class="text-xs font-semibold text-emerald-900">
+                    {{ c.code or ('C-' ~ c.id) }}
+                  </div>
+                  <div class="text-sm text-gray-900">
+                    {{ c.title }}
+                  </div>
+                  {% if c.status %}
+                    <div class="mt-0.5 text-[0.7rem] text-gray-600">
+                      Status: {{ c.status }}
+                    </div>
+                  {% endif %}
                 </div>
-                {% if c.status %}
-                  <div class="text-xs text-gray-500 mt-0.5">{{ c.status }}</div>
-                {% endif %}
+                <a href="/orgs/{{ org_id }}/controls"
+                   class="text-[0.7rem] text-emerald-800 hover:text-emerald-900 hover:underline whitespace-nowrap">
+                  View controls
+                </a>
               </div>
-              <a class="btn-muted text-xs" href="/controls/{{ c.id }}">View control</a>
             </li>
           {% endif %}
         {% endfor %}
       </ul>
-      {% if not has_any %}
-        <p class="muted text-sm">No controls have been linked to this risk yet.</p>
-      {% endif %}
-    </div>
 
-    <!-- Linked items -->
-    <div>
-      <h3 class="text-base font-semibold mb-2">Linked news & items</h3>
-      {% if linked_items and linked_items|length %}
-        <ul class="grid gap-3">
-          {% for it in linked_items %}
-          <li class="card">
-            <h4 class="text-sm font-semibold leading-snug">
-              <a href="{{ it.link }}" target="_blank" rel="noopener"
-                 class="text-emerald-700 hover:text-emerald-900 hover:underline">
-                {{ it.title or 'Untitled item' }}
-              </a>
-            </h4>
-            <div class="muted text-xs mt-1">
-              {{ it.source or 'Unknown' }}
-              {% if it.published_at %} • {{ it.published_at }}{% endif %}
-            </div>
-            {% set blurb = it.ai_summary or it.content or '' %}
-            {% if blurb %}
-              <p class="mt-2 text-xs leading-relaxed">
-                {{ blurb[:260] }}{% if blurb|length > 260 %}…{% endif %}
-              </p>
-            {% endif %}
-            <div class="mt-2">
-              <a class="btn-muted text-xs" href="/items/{{ it.guid }}">View in summaries</a>
-            </div>
-          </li>
-          {% endfor %}
-        </ul>
-      {% else %}
-        <p class="muted text-sm">
-          No items have been linked to this risk yet.
-          Use the <strong>“Link to risk”</strong> dropdown on the Summaries page to add relevant Ofgem news and guidance here.
+      {% if not has_linked_controls %}
+        <p class="text-sm text-gray-500 mt-1">
+          No controls are currently linked to this risk.
         </p>
       {% endif %}
-    </div>
-  </section>
 
-  <!-- SIDE COLUMN -->
-  <aside class="panel" style="padding:1rem; border-radius:12px;">
-    <h3 class="text-sm font-semibold mb-2">Meta</h3>
-    <dl class="text-sm space-y-1">
-      <div class="flex justify-between gap-2">
-        <dt class="text-gray-500">Created</dt>
-        <dd>{{ risk.created_at or '—' }}</dd>
-      </div>
-      <div class="flex justify-between gap-2">
-        <dt class="text-gray-500">Last updated</dt>
-        <dd>{{ risk.updated_at or '—' }}</dd>
-      </div>
-      {% if risk.owner_name or risk.owner_email %}
-      <div class="flex justify-between gap-2 mt-2">
-        <dt class="text-gray-500">Owner</dt>
-        <dd class="text-right">
-          {% if risk.owner_name %}{{ risk.owner_name }}{% endif %}
-          {% if risk.owner_email %}
-            <div><a class="text-emerald-700 hover:underline" href="mailto:{{ risk.owner_email }}">{{ risk.owner_email }}</a></div>
-          {% endif %}
-        </dd>
-      </div>
-      {% endif %}
-    </dl>
+      <p class="mt-3 text-xs text-gray-400">
+        To change which controls mitigate this risk, use the “Edit” / drawer UI from the risks list.
+      </p>
+    </section>
 
-    <div class="mt-4 border-t border-gray-100 pt-3">
-      <a class="btn-muted w-full text-center block text-sm" href="/orgs/{{ org_id }}/org-risks">
-        ← Back to risks list
-      </a>
-    </div>
-  </aside>
+    <!-- Linked news items (right) -->
+    <section class="lg:col-span-3 panel p-4 sm:p-5">
+      <div class="flex items-center justify-between mb-3">
+        <div>
+          <h2 class="text-sm font-semibold text-gray-800">
+            Linked news items
+          </h2>
+          <p class="text-xs text-gray-500 mt-0.5">
+            Items you’ve explicitly mapped to this risk from the summaries screen.
+          </p>
+        </div>
+      </div>
+
+      {% if linked_items and linked_items|length %}
+<section class="mt-8">
+  <h2 class="text-sm font-semibold text-gray-800 mb-2">Linked news items</h2>
+  <ul class="space-y-2">
+    {% for it in linked_items %}
+      <li class="border border-gray-100 rounded-lg p-2 bg-white flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+        <div>
+          <a href="{{ it.link }}" target="_blank" rel="noopener"
+             class="text-sm font-semibold text-emerald-700 hover:underline">
+            {{ it.title or 'Untitled item' }}
+          </a>
+          <div class="text-xs text-gray-500 mt-0.5">
+            {{ it.source or 'Unknown' }}
+            {% if it.published_at %} • {{ it.published_at }}{% endif %}
+          </div>
+        </div>
+        {% if it.ai_summary %}
+          <p class="text-xs text-gray-700 sm:max-w-md">
+            {{ it.ai_summary[:180] }}{% if it.ai_summary|length > 180 %}…{% endif %}
+          </p>
+        {% endif %}
+      </li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
+
+    </section>
+  </div>
 </div>
 
 {% endblock %}
